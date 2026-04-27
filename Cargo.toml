@@ -1,0 +1,62 @@
+[package]
+name = "kotoba"
+version = "0.1.0"
+edition = "2021"
+publish = false  # INTERNAL ONLY — never publish to crates.io
+
+[lib]
+name = "dark_matter"
+path = "src/lib.rs"
+
+[[bin]]
+name = "dm"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+clap = { version = "4", features = ["derive", "env"] }
+clap_complete = "4"
+reqwest = { version = "0.12", features = ["json", "stream"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+futures-util = "0.3"
+tokio-util = { version = "0.7", features = ["io"] }
+dirs = "5"
+which = "6"
+async-stream = "0.3"
+async-trait = "0.1"
+arc-swap = "1"
+glob = "0.3"
+ratatui = "0.29"
+crossterm = { version = "0.28", features = ["event-stream"] }
+pulldown-cmark = "0.12"
+similar = "2"
+html2text = "0.12"
+syntect = { version = "5", default-features = false, features = ["default-fancy"] }
+urlencoding = "2"
+base64 = "0.22"
+arboard = "3"
+notify = "6"
+axum = { version = "0.7", features = ["ws"] }
+serde_yaml = "0.9"
+regex = "1"
+tower = "0.4"
+tower-http = { version = "0.5", features = ["cors"] }
+toml = "0.8"
+
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.27", features = ["signal", "process"] }
+
+[dev-dependencies]
+tempfile = "3"
+mockito = "1"
+tokio = { version = "1", features = ["full"] }
+tower = { version = "0.4", features = ["util"] }
+http-body-util = "0.1"
+
+[[bin]]
+name = "kotoba"
+path = "src/host_main.rs"

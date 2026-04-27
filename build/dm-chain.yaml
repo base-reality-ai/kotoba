@@ -1,0 +1,29 @@
+name: dm-build
+description: "Self-build chain: planner → builder → tester loop"
+directive: build/directive.md
+workspace: .dm-workspace
+max_cycles: 100
+max_total_turns: 600
+loop_forever: false
+skip_permissions_warning: true
+nodes:
+  - id: planner
+    name: planner
+    role: planner
+    model: qwen2.5-coder:32b
+    system_prompt_file: build/seeds/planner.md
+    input_from: tester
+
+  - id: builder
+    name: builder
+    role: builder
+    model: qwen2.5-coder:32b
+    system_prompt_file: build/seeds/builder.md
+    input_from: planner
+
+  - id: tester
+    name: tester
+    role: tester
+    model: qwen2.5-coder:32b
+    system_prompt_file: build/seeds/tester.md
+    input_from: builder

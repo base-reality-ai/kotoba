@@ -1,0 +1,9 @@
+/target
+*.log
+.env
+.DS_Store
+.idea/
+.vscode/
+*.swp
+.dm/
+.dm-workspace/

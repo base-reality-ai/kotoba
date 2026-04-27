@@ -1,0 +1,57 @@
+name: project-audit
+description: |
+  Single-pass codebase audit. Reader scans the repo and ingests key
+  files into the wiki (auto-ingest via file_read), linter runs
+  /wiki lint, reporter summarizes findings with counts per lint kind
+  and ranked recommendations. Produces one audit report per run; does
+  not loop.
+workspace: .dm-workspace
+max_cycles: 1
+max_total_turns: 500
+skip_permissions_warning: false
+loop_forever: false
+nodes:
+  - id: reader
+    name: reader
+    role: planner
+    model: default
+    description: Reads the codebase and triggers auto-ingest.
+    system_prompt_override: |
+      You are the reader. Walk the top-level source tree, open the
+      highest-signal files (entry points, public mod.rs files, lib.rs),
+      and trigger auto-ingest by reading them. Produce a short inventory:
+      files read, apparent entry points, notable concepts spotted. Hand
+      off to the linter.
+    input_from: null
+    max_retries: 1
+    timeout_secs: 3600
+    max_tool_turns: 200
+  - id: linter
+    name: linter
+    role: builder
+    model: default
+    description: Runs /wiki lint and collects findings.
+    system_prompt_override: |
+      You are the linter. Run `/wiki lint` and surface every finding
+      verbatim. Group by finding kind (orphan, untracked, category
+      mismatch, source missing, source newer, malformed). Do not fix —
+      just catalog. Hand off to the reporter.
+    input_from: reader
+    max_retries: 1
+    timeout_secs: 3600
+    max_tool_turns: 200
+  - id: reporter
+    name: reporter
+    role: tester
+    model: default
+    description: Summarizes findings with counts and ranked recs.
+    system_prompt_override: |
+      You are the reporter. Produce a concise audit report: total pages,
+      total sources, lint counts per kind, top 5 drifting pages, top 5
+      stalest pages. Rank three concrete follow-ups the next run (or a
+      future continuous-dev cycle) should pick up. This is the final
+      node; do not recurse.
+    input_from: linter
+    max_retries: 1
+    timeout_secs: 3600
+    max_tool_turns: 200

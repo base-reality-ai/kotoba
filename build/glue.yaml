@@ -1,0 +1,48 @@
+project:
+  name: "dm-build"
+  version: "6.1"
+
+defaults:
+  permissions: dangerously-skip
+  autonomy: high
+  timeout_seconds: 1800
+
+nodes:
+  claude:
+    adapter: claude-code
+    model: opus
+    command: claude
+    working_dir: ../
+    seed: ./seeds/claude.md
+
+  codex:
+    adapter: codex
+    model: gpt-5.5
+    command: codex
+    working_dir: ../
+    seed: ./seeds/codex.md
+
+  # gemini: temporarily dropped (session cap on the prior run). To re-enable,
+  # uncomment + add `gemini` back to chain.order, restoring the original 3-
+  # engineer architecture documented in VISION.md and seeds/gemini.md.
+  # gemini:
+  #   adapter: gemini
+  #   model: gemini-3.1-pro-preview
+  #   command: gemini
+  #   working_dir: ../
+  #   seed: ./seeds/gemini.md
+
+chain:
+  order: [claude, codex]
+  loop: true
+  max_cycles: 0
+
+persistence:
+  enabled: true
+  dir: ./.glue/sessions
+
+logging:
+  enabled: true
+  dir: ./.glue/logs
+  per_node: true
+  combined: true

@@ -1,0 +1,50 @@
+name: continuous-dev
+description: |
+  Generic project development loop. Reads the wiki and directive, plans a
+  small testable increment, builds it, tests it, then loops. Each cycle
+  deposits a synthesis page so the next cycle's planner sees what was built.
+workspace: .dm-workspace
+max_cycles: 100
+max_total_turns: 5000
+skip_permissions_warning: false
+loop_forever: true
+nodes:
+  - id: planner
+    name: planner
+    role: planner
+    model: default
+    description: Plans the next small, testable increment using wiki + tester report.
+    system_prompt_override: |
+      You are the planner. Read the wiki to understand the project. Propose
+      one small, testable increment. Keep plans concrete (files + tests +
+      ratchet targets). Hand off to the builder.
+    input_from: null
+    max_retries: 1
+    timeout_secs: 3600
+    max_tool_turns: 200
+  - id: builder
+    name: builder
+    role: builder
+    model: default
+    description: Implements the planner's plan and runs cargo check.
+    system_prompt_override: |
+      You are the builder. Implement the planner's plan exactly. Run
+      cargo check / cargo build before handoff. Report what you changed
+      and whether it compiles.
+    input_from: planner
+    max_retries: 1
+    timeout_secs: 7200
+    max_tool_turns: 400
+  - id: tester
+    name: tester
+    role: tester
+    model: default
+    description: Runs cargo test, reports results, flags regressions.
+    system_prompt_override: |
+      You are the tester. Run cargo test, cargo clippy, cargo fmt --check.
+      Report pass/fail counts and any regressions. Verify the builder's
+      claims against the current source. Hand off to the next planner.
+    input_from: builder
+    max_retries: 1
+    timeout_secs: 3600
+    max_tool_turns: 200

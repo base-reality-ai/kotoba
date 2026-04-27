@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Dark Matter dashboard</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: monospace; background: #1a1a1a; color: #e0e0e0; padding: 16px; }
+  h2 { color: #7ec8e3; margin-bottom: 8px; }
+  h3 { color: #aaa; margin: 16px 0 6px; font-size: 0.95rem; }
+  table { width: 100%; border-collapse: collapse; margin-bottom: 12px; }
+  th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid #333; }
+  th { color: #888; font-size: 0.85rem; }
+  tr:hover td { background: #222; }
+  button { background: #333; color: #e0e0e0; border: 1px solid #555; padding: 4px 12px; cursor: pointer; border-radius: 3px; font-family: monospace; }
+  button:hover { background: #444; }
+  button.danger { border-color: #a00; }
+  button.danger:hover { background: #400; }
+  input, select { background: #222; color: #e0e0e0; border: 1px solid #444; padding: 4px 8px; font-family: monospace; border-radius: 3px; }
+  #status-bar { display: flex; gap: 16px; background: #222; padding: 8px 12px; border-radius: 4px; margin-bottom: 16px; font-size: 0.85rem; color: #888; }
+  #status-bar span { color: #7ec8e3; }
+  #log-panel { background: #111; padding: 10px; border-radius: 4px; height: 200px; overflow-y: auto; font-size: 0.78rem; color: #9f9; white-space: pre-wrap; }
+  .add-row { display: flex; gap: 8px; margin-bottom: 8px; align-items: center; }
+  .add-row input { flex: 1; }
+  .section { margin-bottom: 24px; }
+</style>
+</head>
+<body>
+<h2>Dark Matter dashboard</h2>
+
+<div id="status-bar">
+  <div>model: <span id="st-model">...</span></div>
+  <div>version: <span id="st-version">...</span></div>
+  <div>uptime: <span id="st-uptime">...</span></div>
+</div>
+
+<div class="section">
+  <h3>Chain</h3>
+  <div id="chain-controls" style="margin-bottom:6px;display:none">
+    <button onclick="pauseChain()">Pause</button>
+    <button onclick="resumeChain()">Resume</button>
+    <button class="danger" onclick="stopChain()">Stop</button>
+  </div>
+  <div id="chain-info" style="margin-bottom:8px;font-size:0.85rem;color:#888">Loading...</div>
+  <table id="chain-table" style="display:none">
+    <thead><tr><th>Node</th><th>Model</th><th>Status</th><th>Runs</th><th>Avg(s)</th><th>Fails</th><th>Prompt Tok</th><th>Compl Tok</th></tr></thead>
+    <tbody id="chain-body"></tbody>
+  </table>
+  <div id="chain-talk" style="display:none;margin-top:8px">
+    <div class="add-row">
+      <select id="talk-node" style="width:140px"></select>
+      <input id="talk-msg" placeholder="message to inject">
+      <button onclick="sendTalk()">Talk</button>
+    </div>
+  </div>
+</div>
+
+<div class="section" id="chain-output-section" style="display:none">
+  <h3>Chain Output</h3>
+  <div style="margin-bottom:6px">
+    <select id="log-cycle" style="width:100px">
+      <option value="">All cycles</option>
+    </select>
+    <button onclick="fetchChainLog()">Load</button>
+  </div>
+  <div id="chain-output" style="background:#111;padding:10px;border-radius:4px;max-height:400px;overflow-y:auto;font-size:0.78rem;color:#ccc;white-space:pre-wrap">Click "Load" to view node outputs.</div>
+</div>
+
+<div class="section">
+  <h3>Sessions</h3>
+  <div style="margin-bottom:6px"><button onclick="newSession()">+ New Session</button></div>
+  <table id="sessions-table">
+    <thead><tr><th>ID</th><th>Host</th><th>Model</th><th>Status</th><th>Clients</th><th>Last Active</th><th></th></tr></thead>
+    <tbody id="sessions-body"><tr><td colspan="7" style="color:#555">Loading...</td></tr></tbody>
+  </table>
+</div>
+
+<div class="section">
+  <h3>Schedules</h3>
+  <div class="add-row">
+    <input id="sched-cron" placeholder="* * * * *" style="width:130px">
+    <input id="sched-prompt" placeholder="prompt text">
+    <button onclick="addSchedule()">Add</button>
+  </div>
+  <table id="schedules-table">
+    <thead><tr><th>ID</th><th>Cron</th><th>Prompt</th><th>Next Run</th><th></th></tr></thead>
+    <tbody id="schedules-body"><tr><td colspan="5" style="color:#555">Loading...</td></tr></tbody>
+  </table>
+</div>
+
+<div class="section">
+  <h3>Daemon Log</h3>
+  <div id="log-panel">Loading...</div>
+</div>
+
+<script>
+function esc(s) {
+  if (s == null) return '';
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+async function fetchStatus() {
+  try {
+    const r = await fetch('/api/status');
+    const d = await r.json();
+    document.getElementById('st-model').textContent = d.model || '-';
+    document.getElementById('st-version').textContent = d.version || '-';
+    document.getElementById('st-uptime').textContent = formatUptime(d.uptime_secs || 0);
+  } catch (_) {}
+}
+
+function formatUptime(secs) {
+  if (secs < 60) return secs + 's';
+  if (secs < 3600) return Math.floor(secs/60) + 'm ' + (secs%60) + 's';
+  if (secs < 86400) return Math.floor(secs/3600) + 'h ' + Math.floor((secs%3600)/60) + 'm';
+  return Math.floor(secs/86400) + 'd ' + Math.floor((secs%86400)/3600) + 'h';
+}
+
+async function fetchSessions() {
+  try {
+    const r = await fetch('/api/sessions');
+    const sessions = await r.json();
+    const tbody = document.getElementById('sessions-body');
+    if (!sessions.length) {
+      tbody.innerHTML = '<tr><td colspan="7" style="color:#555">No sessions</td></tr>';
+      return;
+    }
+    tbody.innerHTML = sessions.map(s => `
+      <tr>
+        <td>${esc(s.session_id || s.id || '-')}</td>
+        <td>${esc(s.host_project || 'kernel')}</td>
+        <td>${esc(s.model || '-')}</td>
+        <td>${esc(s.status || '-')}</td>
+        <td>${esc(s.client_count != null ? s.client_count : '-')}</td>
+        <td>${esc(s.last_active || '-')}</td>
+        <td><button class="danger" onclick="killSession('${esc(s.session_id || s.id)}')">Kill</button></td>
+      </tr>
+    `).join('');
+}
+
+async function newSession() {
+  try {
+    await fetch('/api/sessions', { method: 'POST', headers: {'content-type':'application/json'}, body: '{}' });
+    fetchSessions();
+  } catch (e) { alert('Error: ' + e); }
+}
+
+async function killSession(id) {
+  if (!confirm('Kill session ' + id + '?')) return;
+  try {
+    await fetch('/api/sessions/' + encodeURIComponent(id), { method: 'DELETE' });
+    fetchSessions();
+  } catch (e) { alert('Error: ' + e); }
+}
+
+async function fetchSchedules() {
+  try {
+    const r = await fetch('/api/schedules');
+    const scheds = await r.json();
+    const tbody = document.getElementById('schedules-body');
+    if (!scheds.length) {
+      tbody.innerHTML = '<tr><td colspan="5" style="color:#555">No schedules</td></tr>';
+      return;
+    }
+    tbody.innerHTML = scheds.map(s => `
+      <tr>
+        <td>${esc(s.id)}</td>
+        <td>${esc(s.cron)}</td>
+        <td>${esc(s.prompt)}</td>
+        <td>${esc(s.next_run || '-')}</td>
+        <td><button class="danger" onclick="removeSchedule('${esc(s.id)}')">Remove</button></td>
+      </tr>
+    `).join('');
+  } catch (_) {}
+}
+
+async function addSchedule() {
+  const cron = document.getElementById('sched-cron').value.trim();
+  const prompt = document.getElementById('sched-prompt').value.trim();
+  if (!cron || !prompt) { alert('Cron and prompt are required'); return; }
+  try {
+    await fetch('/api/schedules', {
+      method: 'POST',
+      headers: {'content-type':'application/json'},
+      body: JSON.stringify({ cron, prompt })
+    });
+    document.getElementById('sched-cron').value = '';
+    document.getElementById('sched-prompt').value = '';
+    fetchSchedules();
+  } catch (e) { alert('Error: ' + e); }
+}
+
+async function removeSchedule(id) {
+  try {
+    await fetch('/api/schedules/' + encodeURIComponent(id), { method: 'DELETE' });
+    fetchSchedules();
+  } catch (e) { alert('Error: ' + e); }
+}
+
+async function fetchChain() {
+  try {
+    const r = await fetch('/api/chain');
+    const d = await r.json();
+    const info = document.getElementById('chain-info');
+    const controls = document.getElementById('chain-controls');
+    const table = document.getElementById('chain-table');
+    const tbody = document.getElementById('chain-body');
+    const talkDiv = document.getElementById('chain-talk');
+    const outputSection = document.getElementById('chain-output-section');
+    if (!d.running) {
+      info.textContent = 'No chain running';
+      controls.style.display = 'none';
+      table.style.display = 'none';
+      talkDiv.style.display = 'none';
+      outputSection.style.display = 'none';
+      return;
+    }
+    controls.style.display = '';
+    table.style.display = '';
+    talkDiv.style.display = '';
+    outputSection.style.display = '';
+    // Update cycle dropdown
+    const cycleSelect = document.getElementById('log-cycle');
+    const currentCycle = parseInt(d.cycle) || 1;
+    const prevVal = cycleSelect.value;
+    let opts = '<option value="">All cycles</option>';
+    for (let i = 1; i <= currentCycle; i++) { opts += '<option value="' + i + '">Cycle ' + i + '</option>'; }
+    cycleSelect.innerHTML = opts;
+    if (prevVal) cycleSelect.value = prevVal;
+    info.innerHTML = `<span style="color:#7ec8e3">${esc(d.chain_name)}</span> &mdash; cycle ${esc(d.cycle)} &mdash; node: ${esc(d.active_node || '-')} &mdash; turns: ${esc(d.turns_used)}/${esc(d.max_total_turns)} &mdash; ${esc(d.total_duration_secs != null ? d.total_duration_secs.toFixed(1) : '0')}s`;
+    const nodes = d.nodes || [];
+    tbody.innerHTML = nodes.map(n => `
+      <tr>
+        <td>${esc(n.name)}</td>
+        <td>${esc(n.model)}</td>
+        <td>${esc(n.status)}</td>
+        <td>${esc(n.runs)}</td>
+        <td>${esc(typeof n.avg_duration_secs === 'number' ? n.avg_duration_secs.toFixed(1) : '-')}</td>
+        <td>${esc(n.failures)}</td>
+        <td>${esc(n.prompt_tokens || 0)}</td>
+        <td>${esc(n.completion_tokens || 0)}</td>
+      </tr>
+    `).join('');
+    // Populate talk node selector
+    const sel = document.getElementById('talk-node');
+    const prev = sel.value;
+    sel.innerHTML = nodes.map(n => `<option value="${esc(n.name)}">${esc(n.name)}</option>`).join('');
+    if (prev && nodes.some(n => n.name === prev)) sel.value = prev;
+  } catch (_) {}
+}
+
+async function stopChain() {
+  if (!confirm('Stop the running chain?')) return;
+  try { await fetch('/api/chain/stop', { method: 'POST' }); fetchChain(); } catch (e) { alert('Error: ' + e); }
+}
+async function pauseChain() {
+  try { await fetch('/api/chain/pause', { method: 'POST' }); fetchChain(); } catch (e) { alert('Error: ' + e); }
+}
+async function resumeChain() {
+  try { await fetch('/api/chain/resume', { method: 'POST' }); fetchChain(); } catch (e) { alert('Error: ' + e); }
+}
+async function fetchChainLog() {
+  const cycle = document.getElementById('log-cycle').value;
+  const url = cycle ? '/api/chain/log?cycle=' + cycle : '/api/chain/log';
+  try {
+    const r = await fetch(url);
+    const d = await r.json();
+    const panel = document.getElementById('chain-output');
+    if (!d.ok) { panel.textContent = 'Error: ' + (d.error || 'unknown'); return; }
+    if (!d.entries.length) { panel.textContent = '(no artifacts)'; return; }
+    panel.textContent = d.entries.map(e => '--- ' + e.filename + ' ---\n' + e.content).join('\n\n');
+  } catch (e) { document.getElementById('chain-output').textContent = 'Error: ' + e; }
+}
+async function sendTalk() {
+  const node = document.getElementById('talk-node').value;
+  const message = document.getElementById('talk-msg').value.trim();
+  if (!node || !message) { alert('Select a node and enter a message'); return; }
+  try {
+    const r = await fetch('/api/chain/talk', {
+      method: 'POST',
+      headers: {'content-type':'application/json'},
+      body: JSON.stringify({ node, message })
+    });
+    const d = await r.json();
+    if (!d.ok) { alert('Error: ' + d.error); return; }
+    document.getElementById('talk-msg').value = '';
+  } catch (e) { alert('Error: ' + e); }
+}
+
+async function fetchLog() {
+  try {
+    const r = await fetch('/api/log?tail=30');
+    const d = await r.json();
+    const panel = document.getElementById('log-panel');
+    if (Array.isArray(d)) {
+      panel.textContent = d.join('\n') || '(empty)';
+    } else {
+      panel.textContent = JSON.stringify(d);
+    }
+    panel.scrollTop = panel.scrollHeight;
+  } catch (_) {}
+}
+
+function refresh() {
+  fetchStatus();
+  fetchChain();
+  fetchSessions();
+  fetchSchedules();
+  fetchLog();
+}
+
+refresh();
+setInterval(fetchChain, 3000);
+setInterval(fetchSessions, 3000);
+setInterval(fetchLog, 5000);
+setInterval(fetchStatus, 10000);
+</script>
+</body>
+</html>

@@ -1,0 +1,68 @@
+name: self-improve
+description: |
+  Planner/builder/tester loop specifically for dm working on itself.
+  Encodes the operating discipline: one small testable increment per
+  cycle, test counts ratchet monotonically upward, grep for unwrap()
+  in touched files, verify builder claims against current source, leave
+  the wiki smarter every cycle. Reads the wiki and planner brief at
+  cycle start so each cycle builds on the last.
+workspace: .dm-workspace
+max_cycles: 1000
+max_total_turns: 50000
+skip_permissions_warning: false
+loop_forever: true
+nodes:
+  - id: planner
+    name: planner
+    role: planner
+    model: default
+    description: Plans the next small testable increment for dm itself.
+    system_prompt_override: |
+      You are the planner for dm's self-improvement loop. Read the tester
+      report, the wiki (especially the project summary and recent cycle
+      synthesis pages in your planner brief), and the Prime Directive.
+      Pick the highest-leverage next increment — one feature per cycle.
+      Cite which Pillar item you're advancing. Output a concrete plan:
+      files touched, function names, test list, ratchet targets
+      (lib >= N, bin >= M), grep-for-unwrap checklist. Explicitly list
+      what's out of scope. Keep the increment small enough that one
+      builder cycle can land it cleanly.
+    input_from: null
+    max_retries: 1
+    timeout_secs: 3600
+    max_tool_turns: 200
+  - id: builder
+    name: builder
+    role: builder
+    model: default
+    description: Implements the plan with ratchet + grep discipline.
+    system_prompt_override: |
+      You are the builder for dm's self-improvement loop. Implement the
+      planner's plan exactly as specified. Run cargo check / cargo build
+      before handoff. Grep for unwrap() in every file you touched and
+      fix any in production paths. Preserve all existing functionality.
+      Report the diff summary, what compiled, and any deviations from
+      the plan (with reasons).
+    input_from: planner
+    max_retries: 1
+    timeout_secs: 7200
+    max_tool_turns: 400
+  - id: tester
+    name: tester
+    role: tester
+    model: default
+    description: Runs gates, verifies claims, enforces the ratchet.
+    system_prompt_override: |
+      You are the tester for dm's self-improvement loop. Run cargo build
+      --all-targets, cargo fmt --check, cargo clippy --all-targets --
+      -D warnings, cargo test --lib, cargo test --bin dm. Confirm the
+      lib/bin test counts meet or exceed the planner's ratchet targets.
+      Verify the builder's structural claims by greping for the new
+      symbols. Audit for unwrap() in new code paths. Report GREEN/RED
+      with test counts, gate results, and ranked recommendations for
+      the next cycle. Point the next planner at the highest-leverage
+      unshipped Pillar item.
+    input_from: builder
+    max_retries: 1
+    timeout_secs: 3600
+    max_tool_turns: 200
