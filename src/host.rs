@@ -151,10 +151,15 @@ pub fn install_host_capabilities(
         .map_err(|_| HostCapabilitiesAlreadyInstalled)
 }
 
-/// Internal accessor used by the registry constructors to merge installed
-/// capabilities. `None` in kernel mode and in any spawned host that hasn't
-/// installed capabilities.
-pub(crate) fn installed_host_capabilities() -> Option<&'static dyn HostCapabilities> {
+/// Accessor for the currently-installed host capabilities. Returns `None`
+/// in kernel mode and in any spawned host that hasn't called
+/// [`install_host_capabilities`] yet.
+///
+/// `pub` (not `pub(crate)`) so the dm binary can read it via
+/// `dark_matter::host::installed_host_capabilities()` after the
+/// kotoba paradigm-gap fix removed the binary's local `mod host;`
+/// duplication.
+pub fn installed_host_capabilities() -> Option<&'static dyn HostCapabilities> {
     HOST_CAPS.get().map(|b| b.as_ref())
 }
 

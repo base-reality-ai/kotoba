@@ -57,7 +57,7 @@ impl ToolRegistry {
     /// Register a tool supplied by the host project.
     ///
     /// Enforces the `host_` namespace defined in [`crate::host`]: any tool
-    /// whose [`Tool::name`] does not start with [`crate::host::HOST_TOOL_PREFIX`]
+    /// whose [`Tool::name`] does not start with [`dark_matter::host::HOST_TOOL_PREFIX`]
     /// is rejected with a descriptive error. Also rejects collisions with
     /// already-registered tools (kernel-side or otherwise) so a host crate
     /// cannot silently shadow a kernel tool by reusing its wire name.
@@ -69,12 +69,12 @@ impl ToolRegistry {
     #[allow(dead_code)]
     pub fn register_host(&mut self, tool: Box<dyn Tool>) -> Result<()> {
         let name = tool.name();
-        if !name.starts_with(crate::host::HOST_TOOL_PREFIX) {
+        if !name.starts_with(dark_matter::host::HOST_TOOL_PREFIX) {
             bail!(
                 "host tool '{}' must start with '{}' prefix. Try: rename `fn name(&self)` to return \"{}{}\".",
                 name,
-                crate::host::HOST_TOOL_PREFIX,
-                crate::host::HOST_TOOL_PREFIX,
+                dark_matter::host::HOST_TOOL_PREFIX,
+                dark_matter::host::HOST_TOOL_PREFIX,
                 name
             );
         }
@@ -106,7 +106,7 @@ impl ToolRegistry {
     /// Library-only entry point: see [`Self::register_host`] for the
     /// kernel/host split rationale.
     #[allow(dead_code)]
-    pub fn extend_with_host(&mut self, host: &dyn crate::host::HostCapabilities) -> Result<()> {
+    pub fn extend_with_host(&mut self, host: &dyn dark_matter::host::HostCapabilities) -> Result<()> {
         for tool in host.tools() {
             self.register_host(tool)?;
         }
@@ -259,7 +259,7 @@ impl ToolRegistry {
 
         let (host_entries, kernel_entries): (Vec<_>, Vec<_>) = entries
             .iter()
-            .partition(|(name, _)| name.starts_with(crate::host::HOST_TOOL_PREFIX));
+            .partition(|(name, _)| name.starts_with(dark_matter::host::HOST_TOOL_PREFIX));
 
         let mut hints = String::new();
         if !host_entries.is_empty() {
@@ -495,7 +495,7 @@ fn default_registry_inner(
     // as warnings instead of panics so a misconfigured host (e.g. tools with
     // colliding names) doesn't take down the runtime — the operator sees the
     // warning via `dm doctor` / startup banner and can fix the host crate.
-    if let Some(caps) = crate::host::installed_host_capabilities() {
+    if let Some(caps) = dark_matter::host::installed_host_capabilities() {
         if let Err(e) = registry.extend_with_host(caps) {
             crate::warnings::push_warning(format!(
                 "host capabilities: {}. Try: review your `HostCapabilities::tools()` impl for prefix and collision rules.",
@@ -1276,7 +1276,7 @@ mod tests {
     /// registration error.
     #[test]
     fn extend_with_host_merges_tools_and_propagates_errors() {
-        use crate::host::HostCapabilities;
+        use dark_matter::host::HostCapabilities;
         struct GoodTool;
         #[async_trait]
         impl Tool for GoodTool {
@@ -1331,7 +1331,7 @@ mod tests {
     /// surface — this test fails first when either drifts.
     #[test]
     fn extend_with_host_partial_failure_keeps_tools_registered_before_error() {
-        use crate::host::HostCapabilities;
+        use dark_matter::host::HostCapabilities;
         struct GoodFirst;
         #[async_trait]
         impl Tool for GoodFirst {
@@ -1409,7 +1409,7 @@ mod tests {
     /// tools. `extend_with_host` against such a host is a no-op.
     #[test]
     fn extend_with_host_default_is_noop() {
-        use crate::host::HostCapabilities;
+        use dark_matter::host::HostCapabilities;
         struct EmptyHost;
         impl HostCapabilities for EmptyHost {}
         let mut r = ToolRegistry::new();

@@ -21,6 +21,16 @@
 // call sites.
 #![allow(clippy::cast_possible_truncation)]
 
+// Make `dark_matter` resolve to *this* crate from within the library, so the
+// same source files (e.g. doctor.rs, tools/registry.rs) can reference the
+// host module via `dark_matter::host::*` — and the path resolves identically
+// whether the file is being compiled as part of the library OR pulled into a
+// binary via `mod foo;`. Without this, `dark_matter::host` only works from
+// binary context (where the library is an external crate); within the library,
+// only `crate::host` worked, which was the dual-type-identity footgun the
+// kotoba paradigm-gap concept page documents.
+extern crate self as dark_matter;
+
 // Library entry point for integration tests.
 // Only the modules needed by tests are re-exported here.
 pub mod agents;

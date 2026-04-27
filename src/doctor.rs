@@ -49,14 +49,14 @@ fn host_capabilities_section_for_names(names: &[String], installed: bool) -> Str
     }
     let invalid_prefix_count = names
         .iter()
-        .filter(|name| !name.starts_with(crate::host::HOST_TOOL_PREFIX))
+        .filter(|name| !name.starts_with(dark_matter::host::HOST_TOOL_PREFIX))
         .count();
     if invalid_prefix_count > 0 {
         out.push_str(&format!(
             "  ⚠ {} tool(s) missing `{}` prefix. Try: rename host tools to start with `{}`.\n",
             invalid_prefix_count,
-            crate::host::HOST_TOOL_PREFIX,
-            crate::host::HOST_TOOL_PREFIX
+            dark_matter::host::HOST_TOOL_PREFIX,
+            dark_matter::host::HOST_TOOL_PREFIX
         ));
     }
     out.push('\n');
@@ -64,7 +64,7 @@ fn host_capabilities_section_for_names(names: &[String], installed: bool) -> Str
 }
 
 fn host_capabilities_section() -> String {
-    if let Some(caps) = crate::host::installed_host_capabilities() {
+    if let Some(caps) = dark_matter::host::installed_host_capabilities() {
         let mut names: Vec<String> = caps
             .tools()
             .into_iter()

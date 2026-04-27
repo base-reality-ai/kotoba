@@ -16,60 +16,42 @@
 
 use std::io::Write as _;
 
-mod agents;
-mod api;
-mod bench;
-mod changeset;
-mod compaction;
-mod config;
-mod conversation;
-mod daemon;
-pub mod doctor;
-mod document;
-mod error_hints;
-mod eval;
-mod exit_codes;
-mod format;
-mod git;
-mod gpu;
-mod host;
-mod identity;
-mod index;
-pub mod init;
-mod logging;
-mod mcp;
-mod memory;
-mod models;
-mod notify;
-pub mod ollama;
-mod orchestrate;
-mod panic_hook;
-mod permissions;
-mod plugins;
-mod routing;
-mod run;
-mod security;
-mod session;
-mod share;
-mod summarize;
-mod system_prompt;
-mod telemetry;
-mod templates;
-mod testfix;
-mod todo;
-mod tokens;
-mod tools;
-mod translate;
-mod tui;
-mod util;
-mod warnings;
-mod web;
-mod wiki;
+// Kernel modules live in the `dark_matter` library (src/lib.rs's `pub mod foo;`
+// declarations). The dm binary uses them via `dark_matter::foo::*` rather than
+// duplicating them with parallel `mod foo;` declarations here. The duplication
+// previously created two distinct type identities for every kernel module
+// (one in the library crate, one in the binary crate), which made host-cap
+// state in `dark_matter::host::HOST_CAPS` invisible to the binary's
+// `dm::host::installed_host_capabilities()` reader. See kotoba's
+// `.dm/wiki/concepts/paradigm-gap-host-caps-binary-duplication.md` for the
+// full diagnosis. Library is self-aliased to `dark_matter` via
+// `extern crate self as dark_matter;` in lib.rs so the `dark_matter::*` paths
+// in shared source files (e.g. doctor.rs, tools/registry.rs) resolve
+// identically whether compiled into the library or referenced here.
+//
+// Glob each module into scope so existing bareword references (e.g.
+// `daemon::run_daemon(...)`, `use tui::app::EntryKind`) keep working without a
+// 73-callsite sweep across this file. The `dm::*` alias remains useful for
+// path-position references where unambiguous (`dm::host::install_*`).
+use dark_matter as dm;
+// Bring every kernel module into scope. Some are unused at this exact callsite
+// snapshot but kept in the list deliberately — the binary's bareword refs grow
+// and shrink over time; tracking which are currently referenced isn't worth
+// the maintenance cost.
+#[allow(unused_imports)]
+use dark_matter::{
+    agents, api, bench, changeset, compaction, config, conversation, daemon,
+    doctor, document, error_hints, eval, exit_codes, format, git, gpu, host,
+    identity, index, init, logging, mcp, memory, models, notify, ollama,
+    orchestrate, panic_hook, permissions, plugins, routing, run, security,
+    session, share, summarize, system_prompt, telemetry, templates, testfix,
+    todo, tokens, tools, translate, tui, util, warnings, web, wiki,
+};
 
-use crate::config::Config;
-use crate::conversation::DEFAULT_MAX_TURNS;
-use crate::ollama::client::OllamaClient;
-use crate::session::short_id;
+use dm::config::Config;
+use dm::conversation::DEFAULT_MAX_TURNS;
+use dm::ollama::client::OllamaClient;
+use dm::session::short_id;
 use anyhow::Context;
 use clap::{Parser, ValueEnum};
 use std::collections::HashMap;
@@ -930,12 +912,12 @@ fn load_config_or_exit() -> Config {
             let _ = writeln!(
                 std::io::stderr(),
                 "{}",
-                crate::error_hints::format_dm_error(
+                dm::error_hints::format_dm_error(
                     &format!("config error: {:#}", e),
                     Some("dm --doctor"),
                 )
             );
-            std::process::exit(crate::exit_codes::ExitCode::ConfigError.as_i32());
+            std::process::exit(dm::exit_codes::ExitCode::ConfigError.as_i32());
         }
     }
 }
@@ -969,20 +951,24 @@ fn resolved_mcp_dir(requested: Option<McpScope>, config_dir: &Path) -> (McpScope
     (scope, dir)
 }
 
+// kotoba host-project divergence from canonical dm: register kotoba's
+// HostCapabilities at dm-binary startup so the TUI / doctor / chain see
+// host tools when launched as `dm` or via `kotoba dm`. With the kernel-side
+// host/binary module-duplication fix in place, this install populates the
+// single `dark_matter::host::HOST_CAPS` slot (no longer two).
+#[path = "host_caps.rs"]
+mod host_caps;
+#[path = "domain.rs"]
+#[allow(dead_code)]
+mod domain;
+
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
-    // NOTE (v0.1 known limitation): kotoba's host capabilities are NOT
-    // installed at this point. The dm binary has its own `mod host;`
-    // copy of `src/host.rs` whose `OnceLock<HostCapabilities>` is a
-    // different type from `dark_matter::host`'s OnceLock — even though
-    // they come from the same source file. KotobaCapabilities (defined
-    // in src/host_caps.rs) implements the LIBRARY trait, so it can't
-    // be installed into this binary's local copy without also impl-ing
-    // the binary trait, which cascades into duplicating `Tool`-impls
-    // for every host tool. The `kotoba` binary (host_main.rs) DOES
-    // install caps in its own process; that process's wiki tools work.
-    // Surfacing host caps to the dm-binary TUI is a paradigm-gap fix
-    // owed to canonical dm — see VISION.md follow-up notes.
+    // Best-effort install — already-installed is fine (re-entrant launches,
+    // tests). Failing here would block dm from launching at all.
+    let _ = dark_matter::host::install_host_capabilities(Box::new(
+        host_caps::KotobaCapabilities,
+    ));
 
     match run().await {
         Ok(()) => std::process::ExitCode::SUCCESS,
@@ -991,12 +977,12 @@ async fn main() -> std::process::ExitCode {
             let _ = writeln!(
                 std::io::stderr(),
                 "{}",
-                crate::error_hints::format_dm_error(
+                dm::error_hints::format_dm_error(
                     &format!("{:#}", e),
                     Some("dm --doctor, or re-run with RUST_LOG=debug"),
                 )
             );
-            crate::exit_codes::classify(&e).into()
+            dm::exit_codes::classify(&e).into()
         }
     }
 }
@@ -1018,7 +1004,7 @@ async fn run() -> anyhow::Result<()> {
                     "dm: unknown --permission-mode '{}' (use: default, plan, full)",
                     mode
                 );
-                std::process::exit(crate::exit_codes::ExitCode::ConfigError.as_i32());
+                std::process::exit(dm::exit_codes::ExitCode::ConfigError.as_i32());
             }
         }
     }
@@ -1382,12 +1368,12 @@ async fn run() -> anyhow::Result<()> {
         let _ = writeln!(
             std::io::stderr(),
             "{}",
-            crate::error_hints::format_dm_error(
+            dm::error_hints::format_dm_error(
                 "--mcp-scope requires an MCP management command",
                 Some("dm --mcp-list --mcp-scope project"),
             )
         );
-        std::process::exit(crate::exit_codes::ExitCode::ConfigError.as_i32());
+        std::process::exit(dm::exit_codes::ExitCode::ConfigError.as_i32());
     }
 
     if cli.mcp_list {
@@ -1421,12 +1407,12 @@ async fn run() -> anyhow::Result<()> {
             let _ = writeln!(
                 std::io::stderr(),
                 "{}",
-                crate::error_hints::format_dm_error(
+                dm::error_hints::format_dm_error(
                     "--mcp-add requires \"name command [args...]\"",
                     Some("dm --mcp-add myserver python -m my_mcp"),
                 )
             );
-            std::process::exit(crate::exit_codes::ExitCode::ConfigError.as_i32());
+            std::process::exit(dm::exit_codes::ExitCode::ConfigError.as_i32());
         }
         let (command, args) = mcp::manage::parse_command(&cmd_part);
         let (scope, mcp_config_dir) = resolved_mcp_dir(cli.mcp_scope, &config.config_dir);
@@ -1918,16 +1904,16 @@ async fn run() -> anyhow::Result<()> {
     if let Some(cmd) = &cli.command {
         match cmd {
             Commands::Init => {
-                crate::panic_hook::install(
-                    crate::panic_hook::CrashContext::transient(config.config_dir.clone()),
+                dm::panic_hook::install(
+                    dm::panic_hook::CrashContext::transient(config.config_dir.clone()),
                     || {},
                 );
                 init::run_init(&config).await?;
                 return Ok(());
             }
             Commands::Doctor => {
-                crate::panic_hook::install(
-                    crate::panic_hook::CrashContext::transient(config.config_dir.clone()),
+                dm::panic_hook::install(
+                    dm::panic_hook::CrashContext::transient(config.config_dir.clone()),
                     || {},
                 );
                 doctor::run_doctor(&client, &config).await;
@@ -1958,8 +1944,8 @@ async fn run() -> anyhow::Result<()> {
 
     // Init — no Ollama needed
     if cli.init {
-        crate::panic_hook::install(
-            crate::panic_hook::CrashContext::transient(config.config_dir.clone()),
+        dm::panic_hook::install(
+            dm::panic_hook::CrashContext::transient(config.config_dir.clone()),
             || {},
         );
         init::run_init(&config).await?;
@@ -1986,15 +1972,15 @@ async fn run() -> anyhow::Result<()> {
                     "Unknown shell '{}'. Supported: bash, zsh, fish",
                     other
                 );
-                std::process::exit(crate::exit_codes::ExitCode::AgentError.as_i32());
+                std::process::exit(dm::exit_codes::ExitCode::AgentError.as_i32());
             }
         }
         return Ok(());
     }
 
     if cli.doctor {
-        crate::panic_hook::install(
-            crate::panic_hook::CrashContext::transient(config.config_dir.clone()),
+        dm::panic_hook::install(
+            dm::panic_hook::CrashContext::transient(config.config_dir.clone()),
             || {},
         );
         doctor::run_doctor(&client, &config).await;
@@ -2002,8 +1988,8 @@ async fn run() -> anyhow::Result<()> {
     }
 
     if cli.recovery {
-        let markers = crate::panic_hook::list_panic_markers(&config.config_dir);
-        println!("{}", crate::panic_hook::format_recovery_report(&markers));
+        let markers = dm::panic_hook::list_panic_markers(&config.config_dir);
+        println!("{}", dm::panic_hook::format_recovery_report(&markers));
         return Ok(());
     }
 
@@ -2046,7 +2032,7 @@ async fn run() -> anyhow::Result<()> {
         let report = orchestrate::validate_chain_config_detailed(&chain_config, &models);
         println!("{}", report.report);
         if !report.errors.is_empty() {
-            std::process::exit(crate::exit_codes::ExitCode::AgentError.as_i32());
+            std::process::exit(dm::exit_codes::ExitCode::AgentError.as_i32());
         }
         return Ok(());
     }
@@ -2295,7 +2281,7 @@ async fn run() -> anyhow::Result<()> {
             std::io::stderr(),
             "      Or set OLLAMA_HOST to point at your Ollama instance."
         );
-        std::process::exit(crate::exit_codes::ExitCode::ModelUnreachable.as_i32());
+        std::process::exit(dm::exit_codes::ExitCode::ModelUnreachable.as_i32());
     }
 
     // --mcp-test: spawn MCP server and run initialize handshake
@@ -2327,7 +2313,7 @@ async fn run() -> anyhow::Result<()> {
                         name,
                         e
                     );
-                    std::process::exit(crate::exit_codes::ExitCode::AgentError.as_i32());
+                    std::process::exit(dm::exit_codes::ExitCode::AgentError.as_i32());
                 }
             },
             Err(e) => {
@@ -2337,7 +2323,7 @@ async fn run() -> anyhow::Result<()> {
                     name,
                     e
                 );
-                std::process::exit(crate::exit_codes::ExitCode::AgentError.as_i32());
+                std::process::exit(dm::exit_codes::ExitCode::AgentError.as_i32());
             }
         }
         return Ok(());
@@ -2361,12 +2347,12 @@ async fn run() -> anyhow::Result<()> {
             let _ = writeln!(
                 std::io::stderr(),
                 "{}",
-                crate::error_hints::format_dm_error(
+                dm::error_hints::format_dm_error(
                     "no file diffs found in input",
                     Some("git diff | dm --apply-diff  (or pass a .patch path)"),
                 )
             );
-            std::process::exit(crate::exit_codes::ExitCode::AgentError.as_i32());
+            std::process::exit(dm::exit_codes::ExitCode::AgentError.as_i32());
         }
 
         let mut any_failed = false;
@@ -2424,7 +2410,7 @@ async fn run() -> anyhow::Result<()> {
         );
 
         if any_failed {
-            std::process::exit(crate::exit_codes::ExitCode::AgentError.as_i32());
+            std::process::exit(dm::exit_codes::ExitCode::AgentError.as_i32());
         }
         return Ok(());
     }
@@ -2519,12 +2505,12 @@ async fn run() -> anyhow::Result<()> {
             let _ = writeln!(
                 std::io::stderr(),
                 "{}",
-                crate::error_hints::format_dm_error(
+                dm::error_hints::format_dm_error(
                     "--agent-run requires a prompt via -p or positional argument",
                     Some("dm --agent-run general -p \"summarize README\""),
                 )
             );
-            std::process::exit(crate::exit_codes::ExitCode::AgentError.as_i32());
+            std::process::exit(dm::exit_codes::ExitCode::AgentError.as_i32());
         });
         let conv_start = std::time::Instant::now();
         conversation::run_conversation(
@@ -2716,12 +2702,12 @@ async fn run() -> anyhow::Result<()> {
             let _ = writeln!(
                 std::io::stderr(),
                 "{}",
-                crate::error_hints::format_dm_error(
+                dm::error_hints::format_dm_error(
                     "--compare requires at least one model name",
                     Some("dm --compare llama3.1:8b,qwen2.5:7b --compare-prompt \"...\""),
                 )
             );
-            std::process::exit(crate::exit_codes::ExitCode::AgentError.as_i32());
+            std::process::exit(dm::exit_codes::ExitCode::AgentError.as_i32());
         }
         let compare_prompt = if let Some(ref p) = cli.compare_prompt {
             p.clone()
@@ -2737,7 +2723,7 @@ async fn run() -> anyhow::Result<()> {
                     std::io::stderr(),
                     "dm: --compare requires a prompt (use --compare-prompt or pipe stdin)"
                 );
-                std::process::exit(crate::exit_codes::ExitCode::AgentError.as_i32());
+                std::process::exit(dm::exit_codes::ExitCode::AgentError.as_i32());
             }
             trimmed
         };
@@ -2788,12 +2774,12 @@ async fn run() -> anyhow::Result<()> {
                 let _ = writeln!(
                     std::io::stderr(),
                     "{}",
-                    crate::error_hints::format_dm_error(
+                    dm::error_hints::format_dm_error(
                         &format!("invalid glob pattern '{}': {}", pattern, e),
                         Some("quote it, e.g. --pattern 'src/**/*.rs'"),
                     )
                 );
-                std::process::exit(crate::exit_codes::ExitCode::AgentError.as_i32());
+                std::process::exit(dm::exit_codes::ExitCode::AgentError.as_i32());
             }
         }
         return Ok(());
@@ -2807,12 +2793,12 @@ async fn run() -> anyhow::Result<()> {
                 let _ = writeln!(
                     std::io::stderr(),
                     "{}",
-                    crate::error_hints::format_dm_error(
+                    dm::error_hints::format_dm_error(
                         "--translate requires --translate-to <LANG>",
                         Some("dm --translate foo.py --translate-to rust"),
                     )
                 );
-                std::process::exit(crate::exit_codes::ExitCode::AgentError.as_i32());
+                std::process::exit(dm::exit_codes::ExitCode::AgentError.as_i32());
             }
         };
         let out = translate::output_path(src_path, &target_lang, cli.translate_out.as_deref());
@@ -2942,12 +2928,12 @@ async fn run() -> anyhow::Result<()> {
                 let _ = writeln!(
                     std::io::stderr(),
                     "{}",
-                    crate::error_hints::format_dm_error(
+                    dm::error_hints::format_dm_error(
                         "--eval-compare requires at least one model name",
                         Some("dm --eval-compare llama3.1:8b,qwen2.5:7b"),
                     )
                 );
-                std::process::exit(crate::exit_codes::ExitCode::AgentError.as_i32());
+                std::process::exit(dm::exit_codes::ExitCode::AgentError.as_i32());
             }
             for path in &paths {
                 let yaml_text = std::fs::read_to_string(path)
@@ -3051,7 +3037,7 @@ async fn run() -> anyhow::Result<()> {
                 }
 
                 if any_regression {
-                    std::process::exit(crate::exit_codes::ExitCode::AgentError.as_i32());
+                    std::process::exit(dm::exit_codes::ExitCode::AgentError.as_i32());
                 }
             }
         }
@@ -3133,7 +3119,7 @@ async fn run() -> anyhow::Result<()> {
             sess.messages.len()
         );
         let cleared =
-            crate::panic_hook::clear_panic_markers_for_session(&config.config_dir, &sess.id);
+            dm::panic_hook::clear_panic_markers_for_session(&config.config_dir, &sess.id);
         if cleared > 0 {
             let _ = writeln!(
                 std::io::stderr(),
@@ -3158,12 +3144,12 @@ async fn run() -> anyhow::Result<()> {
                 let _ = writeln!(
                     std::io::stderr(),
                     "{}",
-                    crate::error_hints::format_dm_error(
+                    dm::error_hints::format_dm_error(
                         &format!("template error — {}", e),
                         Some("check ~/.dm/templates/ exists, or run dm --list-templates"),
                     )
                 );
-                std::process::exit(crate::exit_codes::ExitCode::AgentError.as_i32());
+                std::process::exit(dm::exit_codes::ExitCode::AgentError.as_i32());
             }
         }
     } else {
@@ -3211,7 +3197,7 @@ async fn run() -> anyhow::Result<()> {
                 "      or run without arguments for interactive mode (requires a TTY)."
             );
         }
-        std::process::exit(crate::exit_codes::ExitCode::ConfigError.as_i32());
+        std::process::exit(dm::exit_codes::ExitCode::ConfigError.as_i32());
     }
 
     let cwd_for_memory = std::env::current_dir().unwrap_or_default();
@@ -3220,8 +3206,8 @@ async fn run() -> anyhow::Result<()> {
     if let Some(prompt_text) = prompt {
         // ── CLI (non-interactive) mode ─────────────────────────────────────────
 
-        crate::panic_hook::install(
-            crate::panic_hook::CrashContext::for_session(
+        dm::panic_hook::install(
+            dm::panic_hook::CrashContext::for_session(
                 config.config_dir.clone(),
                 sess.id.clone(),
             ),
@@ -3537,7 +3523,7 @@ async fn run() -> anyhow::Result<()> {
         let agent_staging = stdout_is_tty && !cli.auto_apply && !cli.serve;
 
         let agent_format_after = cli.format_after;
-        let agent_retry = crate::conversation::RetrySettings::from_config(&config);
+        let agent_retry = dm::conversation::RetrySettings::from_config(&config);
         tokio::spawn(async move {
             tui::agent::run(
                 agent_client,
@@ -3563,7 +3549,7 @@ async fn run() -> anyhow::Result<()> {
         if cli.serve {
             // --serve: run the web UI instead of the terminal UI.
             let (event_bus_tx, _) = tokio::sync::broadcast::channel::<String>(256);
-            let web_token = crate::api::load_or_generate_token(&config.config_dir).ok();
+            let web_token = dm::api::load_or_generate_token(&config.config_dir).ok();
             if let Some(ref t) = web_token {
                 let _ = writeln!(std::io::stderr(), "[dm serve] bearer token: {}", t);
             }
@@ -4010,7 +3996,7 @@ fn format_signal_save_message(
         Err(e) => format!(
             "dm: received {} but {}",
             signal_name,
-            crate::session::storage::format_save_failure_tail(e, config_dir, "\n    ")
+            dm::session::storage::format_save_failure_tail(e, config_dir, "\n    ")
         ),
     }
 }
@@ -4032,7 +4018,7 @@ fn do_signal_save(
         .to_string_lossy()
         .to_string();
     let short = short_id(sess_id);
-    let result = crate::session::storage::update_or_create_stub(
+    let result = dm::session::storage::update_or_create_stub(
         config_dir,
         sess_id,
         session_title,
@@ -4411,8 +4397,8 @@ mod tests {
 
     #[test]
     fn mcp_scope_defaults_project_in_host_mode_global_in_kernel_mode() {
-        let host = crate::identity::Identity {
-            mode: crate::identity::Mode::Host,
+        let host = dm::identity::Identity {
+            mode: dm::identity::Mode::Host,
             host_project: Some("finance-app".into()),
             canonical_dm_revision: None,
             canonical_dm_repo: None,
@@ -4424,7 +4410,7 @@ mod tests {
             McpScope::Global
         );
 
-        let kernel = crate::identity::Identity::default_kernel();
+        let kernel = dm::identity::Identity::default_kernel();
         assert_eq!(resolve_mcp_scope(None, &kernel), McpScope::Global);
         assert_eq!(
             resolve_mcp_scope(Some(McpScope::Project), &kernel),
@@ -4665,7 +4651,7 @@ mod tests {
 
     #[test]
     fn config_error_hint_mentions_doctor() {
-        let out = crate::error_hints::format_dm_error(
+        let out = dm::error_hints::format_dm_error(
             "config error: something broken",
             Some("dm --doctor"),
         );
@@ -4675,7 +4661,7 @@ mod tests {
 
     #[test]
     fn toplevel_error_hint_mentions_rust_log() {
-        let out = crate::error_hints::format_dm_error(
+        let out = dm::error_hints::format_dm_error(
             "some anyhow error",
             Some("dm --doctor, or re-run with RUST_LOG=debug"),
         );
@@ -4685,7 +4671,7 @@ mod tests {
 
     #[test]
     fn mcp_add_hint_shows_concrete_example() {
-        let out = crate::error_hints::format_dm_error(
+        let out = dm::error_hints::format_dm_error(
             "--mcp-add requires \"name command [args...]\"",
             Some("dm --mcp-add myserver python -m my_mcp"),
         );
@@ -4694,7 +4680,7 @@ mod tests {
 
     #[test]
     fn agent_run_hint_shows_concrete_example() {
-        let out = crate::error_hints::format_dm_error(
+        let out = dm::error_hints::format_dm_error(
             "--agent-run requires a prompt via -p or positional argument",
             Some("dm --agent-run general -p \"summarize README\""),
         );
@@ -4704,7 +4690,7 @@ mod tests {
 
     #[test]
     fn compare_hint_shows_two_model_csv() {
-        let out = crate::error_hints::format_dm_error(
+        let out = dm::error_hints::format_dm_error(
             "--compare requires at least one model name",
             Some("dm --compare llama3.1:8b,qwen2.5:7b --compare-prompt \"...\""),
         );
@@ -4713,7 +4699,7 @@ mod tests {
 
     #[test]
     fn glob_hint_mentions_quoting() {
-        let out = crate::error_hints::format_dm_error(
+        let out = dm::error_hints::format_dm_error(
             "invalid glob pattern 'src/**.rs': parse error",
             Some("quote it, e.g. --pattern 'src/**/*.rs'"),
         );
@@ -4723,7 +4709,7 @@ mod tests {
 
     #[test]
     fn translate_hint_mentions_translate_to() {
-        let out = crate::error_hints::format_dm_error(
+        let out = dm::error_hints::format_dm_error(
             "--translate requires --translate-to <LANG>",
             Some("dm --translate foo.py --translate-to rust"),
         );
@@ -4732,7 +4718,7 @@ mod tests {
 
     #[test]
     fn template_hint_mentions_dm_templates_path() {
-        let out = crate::error_hints::format_dm_error(
+        let out = dm::error_hints::format_dm_error(
             "template error — not found",
             Some("check ~/.dm/templates/ exists, or run dm --list-templates"),
         );
@@ -4747,13 +4733,13 @@ mod tests {
 
     #[test]
     fn ollama_connect_hint_points_at_ollama_serve() {
-        let h = crate::ollama::hints::HINT_CONNECT_FAILED;
+        let h = dm::ollama::hints::HINT_CONNECT_FAILED;
         assert!(h.contains("ollama serve"), "got: {h}");
     }
 
     #[test]
     fn ollama_embed_hint_mentions_embed_model() {
-        let h = crate::ollama::hints::HINT_EMBED_MALFORMED;
+        let h = dm::ollama::hints::HINT_EMBED_MALFORMED;
         assert!(
             h.to_lowercase().contains("embed"),
             "embed hint should name embeddings: {h}"
@@ -4762,7 +4748,7 @@ mod tests {
 
     #[test]
     fn ollama_model_not_found_hint_suggests_pull() {
-        let h = crate::ollama::hints::HINT_MODEL_NOT_FOUND;
+        let h = dm::ollama::hints::HINT_MODEL_NOT_FOUND;
         assert!(
             h.contains("ollama pull"),
             "not-found hint should suggest pull: {h}"
@@ -4771,7 +4757,7 @@ mod tests {
 
     #[test]
     fn pull_status_classifier_maps_404_to_spelling_hint() {
-        let h = crate::ollama::hints::hint_for_pull_status(404).expect("404 has hint");
+        let h = dm::ollama::hints::hint_for_pull_status(404).expect("404 has hint");
         assert!(
             h.contains("spelling") || h.contains("not found"),
             "got: {h}"
@@ -4780,23 +4766,23 @@ mod tests {
 
     #[test]
     fn pull_status_classifier_maps_5xx_to_retry_hint() {
-        let h = crate::ollama::hints::hint_for_pull_status(503).expect("503 has hint");
+        let h = dm::ollama::hints::hint_for_pull_status(503).expect("503 has hint");
         assert!(h.contains("registry") || h.contains("later"), "got: {h}");
     }
 
     #[test]
     fn show_status_classifier_404_is_model_not_found() {
         assert_eq!(
-            crate::ollama::hints::hint_for_show_status(404),
-            Some(crate::ollama::hints::HINT_MODEL_NOT_FOUND)
+            dm::ollama::hints::hint_for_show_status(404),
+            Some(dm::ollama::hints::HINT_MODEL_NOT_FOUND)
         );
     }
 
     #[test]
     fn delete_status_classifier_404_is_model_not_found() {
         assert_eq!(
-            crate::ollama::hints::hint_for_delete_status(404),
-            Some(crate::ollama::hints::HINT_MODEL_NOT_FOUND)
+            dm::ollama::hints::hint_for_delete_status(404),
+            Some(dm::ollama::hints::HINT_MODEL_NOT_FOUND)
         );
     }
 
