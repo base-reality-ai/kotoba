@@ -1,7 +1,7 @@
 //! Integration test for kotoba's host capabilities.
 //!
 //! Verifies that:
-//! - The 5 tools install cleanly via `install_host_capabilities`
+//! - The 7 tools install cleanly via `install_host_capabilities`
 //! - All carry the `host_` prefix (registry would reject otherwise)
 //! - Each tool has a non-empty description and a parameters schema
 //!
@@ -22,13 +22,13 @@ mod host_caps;
 mod domain;
 
 #[test]
-fn capabilities_register_five_tools_with_host_prefix() {
+fn capabilities_register_seven_tools_with_host_prefix() {
     let caps = host_caps::KotobaCapabilities;
     let tools = caps.tools();
     assert_eq!(
         tools.len(),
-        5,
-        "expected exactly 5 host tools, got {}",
+        7,
+        "expected exactly 7 host tools, got {}",
         tools.len()
     );
 
@@ -39,6 +39,8 @@ fn capabilities_register_five_tools_with_host_prefix() {
         "host_log_kanji",
         "host_record_struggle",
         "host_quiz_me",
+        "host_plan_session",
+        "host_record_session",
     ];
     for name in expected {
         assert!(

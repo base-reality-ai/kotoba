@@ -115,19 +115,33 @@ cargo build --release
 
 ## Backend models
 
-The default backend (Ollama, `gemma4:26b-128k`) inherited from canonical
-dm is fine for testing the architecture but won't be Japanese-fluent.
-Recommended host config (configure in `~/.dm/settings.json` or per-call):
+Kotoba reads role-specific model settings from environment variables
+first, then `.dm/kotoba.toml`, then built-in defaults. The v0.2
+planner and recorder are rule-based host capabilities, so their model
+values are loaded and documented for the v0.3 agent-driven versions;
+`KOTOBA_PERSONA_MODEL` is active now and is passed to the dm TUI as
+`--model` by `kotoba session`.
 
-| Role | Recommended model |
-|---|---|
-| Conversation persona | `gemini-3.1-pro-preview` (strongest Japanese) |
-| Pre-session planner | `claude-opus` (reasoning over wiki state) |
-| Post-session recorder | `claude-opus` or `gpt-5.5` |
+| Role | Env var | TOML key | Default |
+|---|---|---|---|
+| Conversation persona | `KOTOBA_PERSONA_MODEL` | `persona_model` | `gemini-3.1-pro-preview` |
+| Pre-session planner | `KOTOBA_PLANNER_MODEL` | `planner_model` | `claude-opus` |
+| Post-session recorder | `KOTOBA_RECORDER_MODEL` | `recorder_model` | `claude-opus` |
 
-Wiring chain-orchestrated planner/recorder agents around the
-conversation is the **v0.2 milestone** — see TODOs in `host_main.rs`
-and the `.dm/wiki/concepts/learning-loop.md` design page.
+Example `.dm/kotoba.toml`:
+
+```toml
+[models]
+persona_model = "gemini-3.1-pro-preview"
+planner_model = "claude-opus"
+recorder_model = "claude-opus"
+```
+
+Environment variables override the TOML file for local experiments:
+
+```bash
+KOTOBA_PERSONA_MODEL=gemini-3.1-pro-preview kotoba session
+```
 
 ## v0.1 scope
 
