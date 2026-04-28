@@ -84,6 +84,7 @@ pub async fn handle_slash_signal(
     undo_snapshot: &mut Option<Vec<Value>>,
     session: &mut Session,
     config_dir: &Path,
+    settings_dir: &Path,
     event_tx: &mpsc::Sender<BackendEvent>,
     client: &mut OllamaClient,
     tool_client: &mut Option<OllamaClient>,
@@ -141,7 +142,7 @@ pub async fn handle_slash_signal(
         }
     } else if let Some(spec) = signal.strip_prefix("/model tool ") {
         let spec = spec.trim();
-        let settings_path = config_dir.join("settings.json");
+        let settings_path = settings_dir.join("settings.json");
         let existing_json = std::fs::read_to_string(&settings_path).ok();
         let mut v: serde_json::Value = existing_json
             .as_deref()
@@ -181,7 +182,7 @@ pub async fn handle_slash_signal(
     } else if let Some(name) = signal.strip_prefix("/model embed ") {
         let name = name.trim().to_string();
         if !name.is_empty() {
-            let settings_path = config_dir.join("settings.json");
+            let settings_path = settings_dir.join("settings.json");
             let existing_json = std::fs::read_to_string(&settings_path).ok();
             let mut v: serde_json::Value = existing_json
                 .as_deref()
@@ -206,7 +207,7 @@ pub async fn handle_slash_signal(
             let base = client.base_url().to_string();
             *client = OllamaClient::new(base, name.clone());
             *context_limit = client.model_context_limit(&name).await;
-            let settings_path = config_dir.join("settings.json");
+            let settings_path = settings_dir.join("settings.json");
             let new_entry = serde_json::json!({"model": name});
             let updated = if let Ok(existing) = std::fs::read_to_string(&settings_path) {
                 if let Ok(mut v) = serde_json::from_str::<serde_json::Value>(&existing) {
@@ -674,6 +675,7 @@ mod tests {
         let mut messages = vec![json!({"role": "system", "content": "test"})];
         let mut undo_snapshot: Option<Vec<Value>> = None;
         let config_dir = tempfile::TempDir::new().unwrap();
+        let settings_dir = tempfile::TempDir::new().unwrap();
         let mut session = Session {
             id: "test".to_string(),
             messages: messages.clone(),
@@ -698,6 +700,7 @@ mod tests {
             &mut undo_snapshot,
             &mut session,
             config_dir.path(),
+            settings_dir.path(),
             &event_tx,
             &mut client,
             &mut tool_client,
@@ -712,6 +715,16 @@ mod tests {
         assert_eq!(
             context_limit, 65536,
             "context_limit should be updated from model_info"
+        );
+        assert!(
+            !config_dir.path().join("settings.json").exists(),
+            "/model must not write host project settings.json"
+        );
+        let settings_text =
+            std::fs::read_to_string(settings_dir.path().join("settings.json")).unwrap();
+        assert!(
+            settings_text.contains("new-model"),
+            "/model must persist to global settings.json"
         );
         mock.assert_async().await;
 

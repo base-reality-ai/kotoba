@@ -33,6 +33,32 @@ fn dispatch_harness(
     (app, client, tx, rx)
 }
 
+#[tokio::test]
+async fn config_set_writes_global_settings_json() {
+    let project = tempfile::TempDir::new().unwrap();
+    let global = tempfile::TempDir::new().unwrap();
+    let (mut app, client, tx, _rx) = dispatch_harness(project.path().to_path_buf());
+    app.global_config_dir = global.path().to_path_buf();
+
+    let result = execute(
+        SlashCommand::Config("set model global-model".into()),
+        &mut app,
+        &client,
+        &tx,
+    )
+    .await;
+    assert!(matches!(result, SlashResult::Done));
+    assert!(
+        !project.path().join("settings.json").exists(),
+        "/config set must not write project-local settings.json"
+    );
+    let settings_text = std::fs::read_to_string(global.path().join("settings.json")).unwrap();
+    assert!(
+        settings_text.contains("global-model"),
+        "/config set must persist to global settings.json"
+    );
+}
+
 /// Save-fails variant of `dispatch_harness`. Callers MUST bind the returned
 /// `NamedTempFile` (e.g. `let (_file, app, ...)`) so Drop doesn't run early
 /// — if it does, the backing file disappears and the "`config_dir` is a file"

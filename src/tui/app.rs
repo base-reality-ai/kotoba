@@ -88,7 +88,10 @@ pub struct App {
     pub agent_busy: bool,
     pub total_tokens: usize,
     pub should_quit: bool,
+    /// Project-scoped config root (`~/.dm` in kernel, `<project>/.dm` in host).
     pub config_dir: PathBuf,
+    /// Operator-scoped config root, always `~/.dm`; owns settings.json.
+    pub global_config_dir: PathBuf,
     // Input history
     pub input_history: Vec<String>,
     pub history_pos: Option<usize>,
@@ -248,6 +251,7 @@ impl App {
             agent_busy: false,
             total_tokens: 0,
             should_quit: false,
+            global_config_dir: config_dir.clone(),
             config_dir,
             input_history,
             history_pos: None,

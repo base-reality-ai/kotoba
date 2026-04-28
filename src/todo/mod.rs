@@ -135,6 +135,7 @@ pub async fn run_todo(
                 &mut engine,
                 &mut sess,
                 config_dir,
+                config_dir,
                 false,
                 "text",
                 10,

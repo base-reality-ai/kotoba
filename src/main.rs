@@ -40,20 +40,19 @@ use dark_matter as dm;
 // the maintenance cost.
 #[allow(unused_imports)]
 use dark_matter::{
-    agents, api, bench, changeset, compaction, config, conversation, daemon,
-    doctor, document, error_hints, eval, exit_codes, format, git, gpu, host,
-    identity, index, init, logging, mcp, memory, models, notify, ollama,
-    orchestrate, panic_hook, permissions, plugins, routing, run, security,
-    session, share, summarize, system_prompt, telemetry, templates, testfix,
-    todo, tokens, tools, translate, tui, util, warnings, web, wiki,
+    agents, api, bench, changeset, compaction, config, conversation, daemon, doctor, document,
+    error_hints, eval, exit_codes, format, git, gpu, host, identity, index, init, logging, mcp,
+    memory, models, notify, ollama, orchestrate, panic_hook, permissions, plugins, routing, run,
+    security, session, share, summarize, system_prompt, telemetry, templates, testfix, todo,
+    tokens, tools, translate, tui, util, warnings, web, wiki,
 };
 
+use anyhow::Context;
+use clap::{Parser, ValueEnum};
 use dm::config::Config;
 use dm::conversation::DEFAULT_MAX_TURNS;
 use dm::ollama::client::OllamaClient;
 use dm::session::short_id;
-use anyhow::Context;
-use clap::{Parser, ValueEnum};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -954,8 +953,8 @@ fn resolved_mcp_dir(requested: Option<McpScope>, config_dir: &Path) -> (McpScope
 // kotoba host-project divergence from canonical dm: register kotoba's
 // HostCapabilities at dm-binary startup so the TUI / doctor / chain see
 // host tools when launched as `dm` or via `kotoba dm`. With the kernel-side
-// host/binary module-duplication fix in place, this install populates the
-// single `dark_matter::host::HOST_CAPS` slot (no longer two).
+// host/binary module-duplication fix in place (canonical commit a143b85),
+// this install populates the single dark_matter::host::HOST_CAPS slot.
 #[path = "host_caps.rs"]
 mod host_caps;
 #[path = "domain.rs"]
@@ -1677,13 +1676,13 @@ async fn run() -> anyhow::Result<()> {
 
     // --config: print effective settings and exit (no Ollama needed)
     if cli.show_config {
-        let rules = permissions::storage::load_rules(&config.config_dir).unwrap_or_default();
+        let rules = permissions::storage::load_rules(&config.global_config_dir).unwrap_or_default();
         println!("model:       {}", config.model);
         println!("host:        {}", config.host);
         println!("embed_model: {}", config.embed_model);
         println!("config_dir:  {}", config.config_dir.display());
         println!("rules:       {} saved permission rule(s)", rules.len());
-        let settings_path = config.config_dir.join("settings.json");
+        let settings_path = config.global_config_dir.join("settings.json");
         println!("settings:    {}", settings_path.display());
         return Ok(());
     }
@@ -1728,11 +1727,11 @@ async fn run() -> anyhow::Result<()> {
 
     // --templates: list available prompt templates and exit (no Ollama needed)
     if cli.templates {
-        let list = templates::list_templates(&config.config_dir);
+        let list = templates::list_templates(&config.global_config_dir);
         if list.is_empty() {
             println!(
                 "No templates found in {}",
-                config.config_dir.join("templates").display()
+                config.global_config_dir.join("templates").display()
             );
             println!("Run 'dm --init' to create example templates.");
         } else {
@@ -2489,7 +2488,7 @@ async fn run() -> anyhow::Result<()> {
             system_prompt.push_str("</tool_usage>\n");
         }
         let settings_rules_agent =
-            permissions::storage::load_rules(&config.config_dir).unwrap_or_default();
+            permissions::storage::load_rules(&config.global_config_dir).unwrap_or_default();
         let mut engine_agent = permissions::engine::PermissionEngine::new(
             cli.dangerously_skip_permissions || is_full_mode,
             settings_rules_agent,
@@ -2524,6 +2523,7 @@ async fn run() -> anyhow::Result<()> {
             &mut engine_agent,
             &mut agent_sess,
             &config.config_dir,
+            &config.global_config_dir,
             cli.verbose,
             &cli.output_format,
             cli.max_turns.unwrap_or(DEFAULT_MAX_TURNS),
@@ -2584,6 +2584,7 @@ async fn run() -> anyhow::Result<()> {
             &mut engine,
             &mut sess,
             &config.config_dir,
+            &config.global_config_dir,
             false,
             "text",
             DEFAULT_MAX_TURNS,
@@ -3083,7 +3084,8 @@ async fn run() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let settings_rules = permissions::storage::load_rules(&config.config_dir).unwrap_or_default();
+    let settings_rules =
+        permissions::storage::load_rules(&config.global_config_dir).unwrap_or_default();
     let mut engine = permissions::engine::PermissionEngine::new(
         cli.dangerously_skip_permissions || cli.serve || is_full_mode,
         settings_rules,
@@ -3118,8 +3120,7 @@ async fn run() -> anyhow::Result<()> {
             sess.id,
             sess.messages.len()
         );
-        let cleared =
-            dm::panic_hook::clear_panic_markers_for_session(&config.config_dir, &sess.id);
+        let cleared = dm::panic_hook::clear_panic_markers_for_session(&config.config_dir, &sess.id);
         if cleared > 0 {
             let _ = writeln!(
                 std::io::stderr(),
@@ -3138,7 +3139,7 @@ async fn run() -> anyhow::Result<()> {
 
     // --template: load template and use as prompt (template wins over --print)
     let template_prompt = if let Some(ref tname) = cli.template {
-        match templates::load_template(&config.config_dir, tname, &cli.template_args) {
+        match templates::load_template(&config.global_config_dir, tname, &cli.template_args) {
             Ok(t) => Some(t),
             Err(e) => {
                 let _ = writeln!(
@@ -3207,10 +3208,7 @@ async fn run() -> anyhow::Result<()> {
         // ── CLI (non-interactive) mode ─────────────────────────────────────────
 
         dm::panic_hook::install(
-            dm::panic_hook::CrashContext::for_session(
-                config.config_dir.clone(),
-                sess.id.clone(),
-            ),
+            dm::panic_hook::CrashContext::for_session(config.config_dir.clone(), sess.id.clone()),
             || {},
         );
 
@@ -3277,7 +3275,7 @@ async fn run() -> anyhow::Result<()> {
             system_prompt.push_str("</tool_usage>\n");
         }
         let mut print_mcp: HashMap<String, Arc<Mutex<mcp::client::McpClient>>> = HashMap::new();
-        for plugin in plugins::discover_plugins(&config.config_dir) {
+        for plugin in plugins::discover_plugins(&config.global_config_dir) {
             let path_str = plugin.path.to_string_lossy().to_string();
             let args: Vec<&str> = plugin.args.iter().map(|s| s.as_str()).collect();
             if let Ok(mut mc) = mcp::client::McpClient::spawn(&path_str, &args).await {
@@ -3301,6 +3299,7 @@ async fn run() -> anyhow::Result<()> {
             &mut engine,
             &mut sess,
             &config.config_dir,
+            &config.global_config_dir,
             cli.verbose,
             &cli.output_format,
             cli.max_turns.unwrap_or(DEFAULT_MAX_TURNS),
@@ -3456,7 +3455,7 @@ async fn run() -> anyhow::Result<()> {
         }
 
         // Load plugins from ~/.dm/plugins/dm-tool-* executables
-        for plugin in plugins::discover_plugins(&config.config_dir) {
+        for plugin in plugins::discover_plugins(&config.global_config_dir) {
             let path_str = plugin.path.to_string_lossy().to_string();
             let args: Vec<&str> = plugin.args.iter().map(|s| s.as_str()).collect();
             match mcp::client::McpClient::spawn(&path_str, &args).await {
@@ -3524,6 +3523,7 @@ async fn run() -> anyhow::Result<()> {
 
         let agent_format_after = cli.format_after;
         let agent_retry = dm::conversation::RetrySettings::from_config(&config);
+        let agent_global_config_dir = config.global_config_dir.clone();
         tokio::spawn(async move {
             tui::agent::run(
                 agent_client,
@@ -3534,6 +3534,7 @@ async fn run() -> anyhow::Result<()> {
                 agent_session,
                 agent_engine,
                 agent_config_dir,
+                agent_global_config_dir,
                 agent_verbose,
                 agent_max_turns,
                 agent_staging,
@@ -3574,6 +3575,7 @@ async fn run() -> anyhow::Result<()> {
                 config.config_dir.clone(),
                 mcp_server_status,
             );
+            app.global_config_dir = config.global_config_dir.clone();
             app.hyperlinks = cli.hyperlinks;
 
             app.push_entry(
@@ -3955,6 +3957,7 @@ async fn try_run_daemon_client(cli: &Cli) -> anyhow::Result<()> {
         config.config_dir.clone(),
         vec![],
     );
+    app.global_config_dir = config.global_config_dir.clone();
     app.hyperlinks = cli.hyperlinks;
     app.push_entry(
         tui::app::EntryKind::SystemInfo,
@@ -4651,10 +4654,8 @@ mod tests {
 
     #[test]
     fn config_error_hint_mentions_doctor() {
-        let out = dm::error_hints::format_dm_error(
-            "config error: something broken",
-            Some("dm --doctor"),
-        );
+        let out =
+            dm::error_hints::format_dm_error("config error: something broken", Some("dm --doctor"));
         assert!(out.contains("Try: dm --doctor"), "got: {out}");
         assert!(out.starts_with("dm: "), "got: {out}");
     }

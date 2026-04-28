@@ -49,7 +49,10 @@
 
 use axum::body::Body;
 use axum::http::{header, Response, StatusCode};
-use axum::{routing::post, Json, Router};
+use axum::{
+    routing::{get, post},
+    Json, Router,
+};
 use futures_util::stream;
 use serde_json::{json, Value};
 use std::net::SocketAddr;
@@ -115,6 +118,34 @@ fn chunk_to_value(chunk: &MockChunk) -> Value {
     }
 }
 
+fn non_streaming_response(chunks: &[Value]) -> Value {
+    let content = chunks
+        .iter()
+        .filter(|chunk| chunk["done"].as_bool() == Some(false))
+        .filter_map(|chunk| chunk["message"]["content"].as_str())
+        .collect::<String>();
+    let done = chunks
+        .iter()
+        .rev()
+        .find(|chunk| chunk["done"].as_bool() == Some(true));
+    json!({
+        "message": {
+            "role": "assistant",
+            "content": content,
+            "tool_calls": [],
+        },
+        "prompt_eval_count": done
+            .and_then(|chunk| chunk["prompt_eval_count"].as_u64())
+            .unwrap_or(0),
+        "eval_count": done
+            .and_then(|chunk| chunk["eval_count"].as_u64())
+            .unwrap_or(0),
+        "eval_duration": done
+            .and_then(|chunk| chunk["eval_duration"].as_u64())
+            .unwrap_or(0),
+    })
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct MockOllama {
     chunks: Vec<Value>,
@@ -148,20 +179,36 @@ impl MockOllama {
 
     pub async fn spawn(self) -> MockHandle {
         let chunks = self.chunks;
-        let app = Router::new().route(
-            "/api/chat",
-            post(move |Json(_req): Json<Value>| {
-                let chunks = chunks.clone();
-                async move {
-                    let ndjson: String = chunks.iter().map(|c| format!("{}\n", c)).collect();
-                    Response::builder()
-                        .status(StatusCode::OK)
-                        .header(header::CONTENT_TYPE, "application/x-ndjson")
-                        .body(Body::from(ndjson))
-                        .unwrap()
-                }
-            }),
-        );
+        let app = Router::new()
+            .route(
+                "/api/version",
+                get(|| async { Json(json!({"version": "mock"})) }),
+            )
+            .route(
+                "/api/tags",
+                get(|| async { Json(json!({"models": [{"name": "mock-model"}]})) }),
+            )
+            .route(
+                "/api/chat",
+                post(move |Json(req): Json<Value>| {
+                    let chunks = chunks.clone();
+                    async move {
+                        if req["stream"].as_bool() == Some(false) {
+                            return Response::builder()
+                                .status(StatusCode::OK)
+                                .header(header::CONTENT_TYPE, "application/json")
+                                .body(Body::from(non_streaming_response(&chunks).to_string()))
+                                .unwrap();
+                        }
+                        let ndjson: String = chunks.iter().map(|c| format!("{}\n", c)).collect();
+                        Response::builder()
+                            .status(StatusCode::OK)
+                            .header(header::CONTENT_TYPE, "application/x-ndjson")
+                            .body(Body::from(ndjson))
+                            .unwrap()
+                    }
+                }),
+            );
 
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
@@ -183,39 +230,48 @@ impl MockOllama {
         let (tx, rx) = mpsc::channel::<MockChunk>(16);
         let rx_slot = Arc::new(tokio::sync::Mutex::new(Some(rx)));
 
-        let app = Router::new().route(
-            "/api/chat",
-            post(move |Json(_req): Json<Value>| {
-                let rx_slot = rx_slot.clone();
-                async move {
-                    let rx = rx_slot.lock().await.take();
-                    let Some(rx) = rx else {
-                        return Response::builder()
-                            .status(StatusCode::INTERNAL_SERVER_ERROR)
-                            .body(Body::from("channel already taken"))
-                            .unwrap();
-                    };
-                    let body_stream = stream::unfold(rx, |mut rx| async move {
-                        match rx.recv().await {
-                            Some(MockChunk::Error(msg)) => {
-                                let err = std::io::Error::other(msg);
-                                Some((Err::<String, std::io::Error>(err), rx))
+        let app = Router::new()
+            .route(
+                "/api/version",
+                get(|| async { Json(json!({"version": "mock"})) }),
+            )
+            .route(
+                "/api/tags",
+                get(|| async { Json(json!({"models": [{"name": "mock-model"}]})) }),
+            )
+            .route(
+                "/api/chat",
+                post(move |Json(_req): Json<Value>| {
+                    let rx_slot = rx_slot.clone();
+                    async move {
+                        let rx = rx_slot.lock().await.take();
+                        let Some(rx) = rx else {
+                            return Response::builder()
+                                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                                .body(Body::from("channel already taken"))
+                                .unwrap();
+                        };
+                        let body_stream = stream::unfold(rx, |mut rx| async move {
+                            match rx.recv().await {
+                                Some(MockChunk::Error(msg)) => {
+                                    let err = std::io::Error::other(msg);
+                                    Some((Err::<String, std::io::Error>(err), rx))
+                                }
+                                Some(chunk) => {
+                                    let line = format!("{}\n", chunk_to_value(&chunk));
+                                    Some((Ok(line), rx))
+                                }
+                                None => None,
                             }
-                            Some(chunk) => {
-                                let line = format!("{}\n", chunk_to_value(&chunk));
-                                Some((Ok(line), rx))
-                            }
-                            None => None,
-                        }
-                    });
-                    Response::builder()
-                        .status(StatusCode::OK)
-                        .header(header::CONTENT_TYPE, "application/x-ndjson")
-                        .body(Body::from_stream(body_stream))
-                        .unwrap()
-                }
-            }),
-        );
+                        });
+                        Response::builder()
+                            .status(StatusCode::OK)
+                            .header(header::CONTENT_TYPE, "application/x-ndjson")
+                            .body(Body::from_stream(body_stream))
+                            .unwrap()
+                    }
+                }),
+            );
 
         let listener = TcpListener::bind("127.0.0.1:0")
             .await

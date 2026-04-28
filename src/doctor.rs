@@ -110,7 +110,7 @@ pub async fn run_doctor_capture(
     pln!("  Embed model:  {}", config.embed_model);
     pln!("  Config dir:   {}", config.config_dir.display());
 
-    let settings_path = config.config_dir.join("settings.json");
+    let settings_path = config.global_config_dir.join("settings.json");
     if settings_path.exists() {
         pln!("  settings.json: ✓ found");
     } else {
@@ -326,14 +326,14 @@ pub async fn run_doctor_capture(
         }
     }
 
-    // 7. Plugins
+    // 7. Plugins (operator-level — discovered under global_config_dir)
     pln!();
-    let plugins = crate::plugins::discover_plugins(&config.config_dir);
+    let plugins = crate::plugins::discover_plugins(&config.global_config_dir);
     pln!("Plugins ({}):", plugins.len());
     if plugins.is_empty() {
         pln!(
             "  none found in {}",
-            config.config_dir.join("plugins").display()
+            config.global_config_dir.join("plugins").display()
         );
         pln!("  install: drop a dm-tool-<name> executable in that directory");
     } else {
@@ -349,7 +349,7 @@ pub async fn run_doctor_capture(
     pln!("  4. Name it dm-tool-<name> and make it executable");
     pln!(
         "  5. Drop it in {}",
-        config.config_dir.join("plugins").display()
+        config.global_config_dir.join("plugins").display()
     );
 
     // Web UI port check
@@ -541,12 +541,12 @@ pub async fn run_doctor_capture(
     }
     pln!();
 
-    // Templates section
-    let templates = crate::templates::list_templates(&config.config_dir);
+    // Templates section (operator-level — under global_config_dir)
+    let templates = crate::templates::list_templates(&config.global_config_dir);
     pln!(
         "Templates: {} found in {}",
         templates.len(),
-        config.config_dir.join("templates").display()
+        config.global_config_dir.join("templates").display()
     );
     pln!();
 
@@ -901,6 +901,7 @@ mod tests {
             host_is_default: false,
             model_is_default: false,
             config_dir: dir.to_path_buf(),
+            global_config_dir: dir.to_path_buf(),
             routing: None,
             aliases: std::collections::HashMap::new(),
             max_retries: 3,

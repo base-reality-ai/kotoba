@@ -32,6 +32,7 @@ pub async fn execute_tool_round(
     messages: &mut Vec<Value>,
     cancel_rx: &tokio::sync::watch::Receiver<bool>,
     config_dir: &Path,
+    settings_dir: &Path,
     session: &mut Session,
     plan_mode: bool,
 ) -> bool {
@@ -136,7 +137,7 @@ pub async fn execute_tool_round(
                     Ok(PermissionDecision::AllowOnce) => true,
                     Ok(PermissionDecision::AlwaysAllow) => {
                         engine.add_settings_rule(Rule::tool_wide(name, Behavior::Allow));
-                        engine.save_settings(config_dir).ok();
+                        engine.save_settings(settings_dir).ok();
                         true
                     }
                     Ok(PermissionDecision::DenyOnce) => {
@@ -146,7 +147,7 @@ pub async fn execute_tool_round(
                     }
                     Ok(PermissionDecision::AlwaysDeny) => {
                         engine.add_settings_rule(Rule::tool_wide(name, Behavior::Deny));
-                        engine.save_settings(config_dir).ok();
+                        engine.save_settings(settings_dir).ok();
                         messages.push(
                             json!({"role":"tool","name":name,"content":"User permanently denied.","is_error":true}),
                         );

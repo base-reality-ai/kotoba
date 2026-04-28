@@ -106,7 +106,10 @@ impl ToolRegistry {
     /// Library-only entry point: see [`Self::register_host`] for the
     /// kernel/host split rationale.
     #[allow(dead_code)]
-    pub fn extend_with_host(&mut self, host: &dyn dark_matter::host::HostCapabilities) -> Result<()> {
+    pub fn extend_with_host(
+        &mut self,
+        host: &dyn dark_matter::host::HostCapabilities,
+    ) -> Result<()> {
         for tool in host.tools() {
             self.register_host(tool)?;
         }

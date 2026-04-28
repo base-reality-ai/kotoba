@@ -377,10 +377,18 @@ fn read_persona_body(project_root: &Path, persona: &str) -> Option<String> {
     std::fs::read_to_string(path).ok()
 }
 
+/// Returns the dm config directory kotoba should read sessions from.
+///
+/// Kotoba runs in host mode, and as of canonical dm `111791e`
+/// (Identity-Aware Configuration Routing), the dm subprocess that
+/// `kotoba session` launches writes its session JSON under
+/// `<project_root>/.dm/sessions/` — not `~/.dm/sessions/` like before.
+/// So we walk the project tree to find `.dm/identity.toml` and return
+/// its parent. The previous `~/.dm` workaround (with timestamp baseline
+/// guarding against cross-host contamination) collapses now that storage
+/// is project-isolated.
 fn dm_config_dir() -> anyhow::Result<PathBuf> {
-    Ok(dirs::home_dir()
-        .ok_or_else(|| anyhow::anyhow!("could not determine home directory"))?
-        .join(".dm"))
+    Ok(std::env::current_dir()?.join(".dm"))
 }
 
 fn latest_session_after(

@@ -431,8 +431,12 @@ async fn run_scheduler_tick(config: &Config) {
                 Some(serde_json::json!({ "task_id": &task_id, "prompt": &prompt })),
             );
 
-            match crate::conversation::run_conversation_capture(
-                &prompt, "daemon", &client, &registry,
+            match crate::conversation::run_conversation_capture_in_config_dir(
+                &prompt,
+                "daemon",
+                &client,
+                &registry,
+                &config_dir,
             )
             .await
             {
@@ -1855,6 +1859,7 @@ mod tests {
             tool_model: None,
             embed_model: "nomic-embed-text".to_string(),
             config_dir: dir.to_path_buf(),
+            global_config_dir: dir.to_path_buf(),
             routing: None,
             aliases: std::collections::HashMap::new(),
             max_retries: 3,

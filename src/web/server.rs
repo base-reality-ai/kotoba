@@ -96,7 +96,7 @@ pub async fn run_with_gpu(
     port: u16,
     gpu_rx: Option<tokio::sync::watch::Receiver<Option<crate::gpu::GpuStats>>>,
 ) -> anyhow::Result<()> {
-    let _ = crate::logging::init("web");
+    let _ = crate::logging::init_in_config_dir("web", &state.config_dir);
     // Relay: agent mpsc → broadcast fan-out to all WS clients.
     // Events are serialized here once instead of per-client.
     let bus = state.event_bus.clone();

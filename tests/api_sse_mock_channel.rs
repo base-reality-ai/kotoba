@@ -34,6 +34,7 @@ fn make_state(host: String) -> ApiState {
             tool_model: None,
             embed_model: "nomic-embed-text".into(),
             config_dir: std::path::PathBuf::from("/tmp"),
+            global_config_dir: std::path::PathBuf::from("/tmp"),
             routing: None,
             aliases: HashMap::new(),
             max_retries: 3,

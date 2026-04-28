@@ -327,7 +327,7 @@ async fn run_agent_task_with_state(
     );
 
     let settings_rules =
-        crate::permissions::storage::load_rules(&config.config_dir).unwrap_or_default();
+        crate::permissions::storage::load_rules(&config.global_config_dir).unwrap_or_default();
     let mut engine = crate::permissions::engine::PermissionEngine::new(false, settings_rules);
     let hooks_config = crate::tools::hooks::HooksConfig::load(&config.config_dir);
     let context_limit = client.model_context_limit(client.model()).await;
@@ -406,6 +406,7 @@ async fn run_agent_task_with_state(
                     &mut session,
                     &mut engine,
                     &config.config_dir,
+                    &config.global_config_dir,
                     &be_tx,
                     &cancel_rx,
                     false, // plan_mode
@@ -466,6 +467,7 @@ mod tests {
             tool_model: None,
             embed_model: "nomic-embed-text".to_string(),
             config_dir: std::env::temp_dir().join("dm_test"),
+            global_config_dir: std::env::temp_dir().join("dm_test"),
             routing: None,
             aliases: std::collections::HashMap::new(),
             max_retries: 3,

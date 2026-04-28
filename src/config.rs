@@ -5,12 +5,34 @@
 //! defaults, prompt-routing rules, model aliases, retry/backoff settings, and
 //! daemon snapshot/idle parameters. Most subsystems take `&Config` (or an
 //! `Arc<Config>`) rather than reading the environment directly.
+//!
+//! # Identity-aware routing
+//!
+//! `Config` exposes two roots:
+//!
+//! - `config_dir` — the **project-scoped** config dir. In `kernel` mode this
+//!   is `~/.dm` (unchanged). In `host` mode this is `<project_root>/.dm` so
+//!   per-project state (sessions, daemon socket, index, chains, hooks, …)
+//!   lives next to the host project's identity rather than colliding under
+//!   `~/.dm/` with every other host project on the same machine.
+//! - `global_config_dir` — always `~/.dm`. Operator-level config that should
+//!   transcend host projects — `settings.json` (default Ollama host/model)
+//!   and `config.toml` (routing rules + model aliases) — is read from here
+//!   in both modes so a single laptop's operator preferences apply across
+//!   every spawned project.
+//!
+//! See `VISION.md` § "Identity protocol" and the Run-31 directive
+//! ("Identity-Aware Configuration Routing") for the rationale. The
+//! per-consumer decisions (sessions/daemon/web/logs project-local;
+//! settings/config.toml global) are documented in
+//! `.dm/wiki/concepts/identity-config-routing.md`.
 
+use crate::identity::{Identity, Mode};
 use anyhow::Context;
 use dirs::home_dir;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Model routing rules loaded from `~/.dm/config.toml [routing]`.
 #[derive(Debug, Clone, Default)]
@@ -38,10 +60,19 @@ pub struct Config {
     pub tool_model: Option<String>,
     /// Embedding model for semantic search (default: "nomic-embed-text").
     pub embed_model: String,
+    /// Project-scoped config dir. Equals `~/.dm` in `kernel` mode and
+    /// `<project_root>/.dm` in `host` mode. Owns per-project state:
+    /// sessions, daemon socket/pid, semantic-search index, chains,
+    /// schedules, hooks, todos, project memory, evals, plugins.
     pub config_dir: PathBuf,
-    /// Routing rules from `~/.dm/config.toml`, if present.
+    /// Operator-level config dir; always `~/.dm`. Owns global-by-design
+    /// state that transcends host projects: `settings.json`,
+    /// `config.toml`, the global half of `mcp_servers.json` layering.
+    /// Equal to `config_dir` in `kernel` mode.
+    pub global_config_dir: PathBuf,
+    /// Routing rules from `<global_config_dir>/config.toml`, if present.
     pub routing: Option<RoutingConfig>,
-    /// Model aliases from `~/.dm/config.toml [aliases]`.
+    /// Model aliases from `<global_config_dir>/config.toml [aliases]`.
     pub aliases: HashMap<String, String>,
     /// Max Ollama retry attempts on transient failures (default 3).
     pub max_retries: usize,
@@ -97,18 +128,44 @@ struct Settings {
 
 impl Config {
     pub fn load() -> anyhow::Result<Self> {
-        let config_dir = home_dir()
-            .context("Could not determine home directory")?
-            .join(".dm");
-        std::fs::create_dir_all(&config_dir).context("Failed to create ~/.dm config directory")?;
+        let home = home_dir().context("Could not determine home directory")?;
+        let identity = crate::identity::load_for_cwd();
+        let global_config_dir = home.join(".dm");
+        let config_dir = compute_config_dir(&home, &identity);
+
+        // Always create the global dir — settings.json/config.toml live there
+        // regardless of mode.
+        std::fs::create_dir_all(&global_config_dir)
+            .context("Failed to create ~/.dm config directory")?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&config_dir, std::fs::Permissions::from_mode(0o700));
+            let _ = std::fs::set_permissions(
+                &global_config_dir,
+                std::fs::Permissions::from_mode(0o700),
+            );
+        }
+        // In host mode, also ensure the project-scoped dir exists. (Spawn
+        // already creates `<project>/.dm/`, but defensive create_dir_all
+        // covers hand-edited / pre-spawn-paradigm host projects.)
+        if config_dir != global_config_dir {
+            std::fs::create_dir_all(&config_dir).with_context(|| {
+                format!(
+                    "Failed to create project config directory at {}",
+                    config_dir.display()
+                )
+            })?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ =
+                    std::fs::set_permissions(&config_dir, std::fs::Permissions::from_mode(0o700));
+            }
         }
 
-        // Load settings.json (best-effort — missing file is fine)
-        let settings = load_settings(&config_dir);
+        // Operator-level data (settings.json, config.toml) is read from the
+        // global dir in both modes — see module docs for the routing rule.
+        let settings = load_settings(&global_config_dir);
 
         // Priority: CLI flag (applied later in main.rs) > env var > settings.json > default
         let (raw_host, host_is_default) = derive_host(
@@ -122,8 +179,8 @@ impl Config {
             settings.model.as_deref(),
         );
 
-        let routing = load_routing_config(&config_dir);
-        let aliases = load_aliases(&config_dir);
+        let routing = load_routing_config(&global_config_dir);
+        let aliases = load_aliases(&global_config_dir);
 
         let raw_retries = settings.max_retries.unwrap_or(3);
         let max_retries = raw_retries.clamp(1, 10);
@@ -187,6 +244,7 @@ impl Config {
                 .embed_model
                 .unwrap_or_else(|| "nomic-embed-text".to_string()),
             config_dir,
+            global_config_dir,
             routing,
             aliases,
             max_retries,
@@ -211,6 +269,31 @@ impl Config {
     pub fn ollama_base_url(&self) -> String {
         format!("http://{}/api", self.host)
     }
+}
+
+/// Identity-aware project config dir resolver.
+///
+/// - `kernel` mode → `<home>/.dm` (legacy, unchanged).
+/// - `host` mode → `<project_root>/.dm`, where `project_root` is derived
+///   from `identity.source` (`<project>/.dm/identity.toml`'s grandparent).
+///   If a host identity is present without a `source` (constructed in-memory,
+///   e.g. tests), falls back to `<home>/.dm` so we never invent a project
+///   root from thin air.
+///
+/// Pure for testability — no I/O, no env access.
+pub(crate) fn compute_config_dir(home: &Path, identity: &Identity) -> PathBuf {
+    if identity.mode == Mode::Host {
+        if let Some(project_root) = identity
+            .source
+            .as_deref()
+            .and_then(Path::parent) // .../.dm
+            .and_then(Path::parent)
+        // <project_root>
+        {
+            return project_root.join(".dm");
+        }
+    }
+    home.join(".dm")
 }
 
 /// Resolve the Ollama host from the available sources, returning the chosen
@@ -260,13 +343,16 @@ pub fn normalize_host(raw: &str) -> String {
 
 /// Check whether auto-formatting of tool-written files is enabled.
 /// Priority: `DM_AUTO_FORMAT` env var > `auto_format` in settings.json > false.
+///
+/// Always reads `~/.dm/settings.json` regardless of identity mode — auto-format
+/// is operator-level, not project-level (`settings.json` lives in
+/// `Config::global_config_dir`).
 pub fn auto_format_enabled() -> bool {
     if let Ok(val) = std::env::var("DM_AUTO_FORMAT") {
         return val == "1" || val.eq_ignore_ascii_case("true");
     }
-    // Fall back to settings.json
-    let config_dir = home_dir().map(|h| h.join(".dm")).unwrap_or_default();
-    let settings = load_settings(&config_dir);
+    let global_config_dir = home_dir().map(|h| h.join(".dm")).unwrap_or_default();
+    let settings = load_settings(&global_config_dir);
     settings.auto_format.unwrap_or(false)
 }
 
@@ -343,6 +429,7 @@ fn load_settings(config_dir: &std::path::Path) -> Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::identity::{Identity, Mode};
     use std::sync::Mutex as StdMutex;
 
     // Serializes tests that mutate DM_AUTO_FORMAT. Without this, parallel
@@ -447,6 +534,7 @@ mod tests {
             tool_model: None,
             embed_model: "nomic-embed-text".to_string(),
             config_dir: std::path::PathBuf::from("/tmp"),
+            global_config_dir: std::path::PathBuf::from("/tmp"),
             routing: None,
             aliases: HashMap::new(),
             max_retries: 3,
@@ -485,6 +573,7 @@ mod tests {
             tool_model: None,
             embed_model: "nomic-embed-text".to_string(),
             config_dir: std::path::PathBuf::from("/tmp"),
+            global_config_dir: std::path::PathBuf::from("/tmp"),
             routing: None,
             aliases: HashMap::new(),
             max_retries: 3,
@@ -538,6 +627,7 @@ mod tests {
             tool_model: None,
             embed_model: "nomic-embed-text".to_string(),
             config_dir: std::path::PathBuf::from("/tmp"),
+            global_config_dir: std::path::PathBuf::from("/tmp"),
             routing: None,
             aliases,
             max_retries: 3,
@@ -560,6 +650,7 @@ mod tests {
             tool_model: None,
             embed_model: "nomic-embed-text".to_string(),
             config_dir: std::path::PathBuf::from("/tmp"),
+            global_config_dir: std::path::PathBuf::from("/tmp"),
             routing: None,
             aliases: HashMap::new(),
             max_retries: 3,
@@ -1006,5 +1097,88 @@ mod tests {
         }
         let mode = std::fs::metadata(&config_dir).unwrap().mode() & 0o777;
         assert_eq!(mode, 0o700, "config dir should be owner-only: {:o}", mode);
+    }
+
+    // -- compute_config_dir routing ---------------------------------------
+    //
+    // The directive's headline change: project-scoped config_dir in host
+    // mode, unchanged in kernel mode. Kernel-mode regression coverage is
+    // the highest-priority test of this run — existing canonical-dm users
+    // must see bit-for-bit identical paths.
+
+    #[test]
+    fn compute_config_dir_kernel_returns_home_dm() {
+        let home = std::path::Path::new("/home/alice");
+        let identity = Identity::default_kernel();
+        assert_eq!(
+            compute_config_dir(home, &identity),
+            std::path::PathBuf::from("/home/alice/.dm"),
+            "kernel mode must remain ~/.dm — backwards compatibility rule",
+        );
+    }
+
+    #[test]
+    fn compute_config_dir_kernel_with_explicit_source_still_uses_home() {
+        // A kernel-mode identity loaded from a real `.dm/identity.toml`
+        // (e.g. inside the canonical-dm repo) must NOT route to that
+        // project root — kernel mode is always ~/.dm regardless of where
+        // the identity file came from.
+        let home = std::path::Path::new("/home/alice");
+        let identity = Identity {
+            mode: Mode::Kernel,
+            host_project: None,
+            canonical_dm_revision: None,
+            canonical_dm_repo: None,
+            source: Some(std::path::PathBuf::from(
+                "/home/alice/dev/dark-matter/.dm/identity.toml",
+            )),
+        };
+        assert_eq!(
+            compute_config_dir(home, &identity),
+            std::path::PathBuf::from("/home/alice/.dm"),
+        );
+    }
+
+    #[test]
+    fn compute_config_dir_host_routes_to_project_root() {
+        // The headline kotoba paradigm-gap fix: a host project's config
+        // dir is `<project>/.dm`, derived from `identity.source`'s
+        // grandparent. Confirms sessions / daemon / index / chains all
+        // land next to the host project's identity, not in `~/.dm/`.
+        let home = std::path::Path::new("/home/alice");
+        let identity = Identity {
+            mode: Mode::Host,
+            host_project: Some("kotoba".into()),
+            canonical_dm_revision: None,
+            canonical_dm_repo: None,
+            source: Some(std::path::PathBuf::from(
+                "/home/alice/dev/kotoba/.dm/identity.toml",
+            )),
+        };
+        assert_eq!(
+            compute_config_dir(home, &identity),
+            std::path::PathBuf::from("/home/alice/dev/kotoba/.dm"),
+        );
+    }
+
+    #[test]
+    fn compute_config_dir_host_without_source_falls_back_to_home() {
+        // Defense in depth: a host identity without a `source` (in-memory
+        // construction, not loaded from disk) must NOT invent a project
+        // root from cwd or anywhere else — it falls back to ~/.dm so we
+        // never silently pollute a user's working directory.
+        let home = std::path::Path::new("/home/alice");
+        let identity = Identity {
+            mode: Mode::Host,
+            host_project: Some("synthetic".into()),
+            canonical_dm_revision: None,
+            canonical_dm_repo: None,
+            source: None,
+        };
+        assert_eq!(
+            compute_config_dir(home, &identity),
+            std::path::PathBuf::from("/home/alice/.dm"),
+            "sourceless host identity must not invent a project root",
+        );
     }
 }

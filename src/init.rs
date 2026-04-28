@@ -26,7 +26,7 @@ pub async fn run_init(config: &Config) -> anyhow::Result<()> {
     println!("✓ Config directory: {}", config.config_dir.display());
 
     // 2. Create settings.json if missing
-    let settings_path = config.config_dir.join("settings.json");
+    let settings_path = config.global_config_dir.join("settings.json");
     if !settings_path.exists() {
         let default_settings = serde_json::json!({
             "model": config.model,
@@ -93,8 +93,10 @@ pub async fn run_init(config: &Config) -> anyhow::Result<()> {
         println!("  (exists) {}", config_toml_path.display());
     }
 
-    // 4. Create templates directory with example templates
-    let templates_dir = config.config_dir.join("templates");
+    // 4. Create templates directory with example templates.
+    // Templates are operator-level (custom slash commands shared across host
+    // projects), so they live under `global_config_dir`, not `config_dir`.
+    let templates_dir = config.global_config_dir.join("templates");
     if !templates_dir.exists() {
         std::fs::create_dir_all(&templates_dir).with_context(|| {
             format!(
@@ -140,8 +142,9 @@ pub async fn run_init(config: &Config) -> anyhow::Result<()> {
         println!("✓ Created: {}", explain_error_path.display());
     }
 
-    // 5. Create plugins directory
-    let plugins_dir = config.config_dir.join("plugins");
+    // 5. Create plugins directory. Plugins are operator-level (`dm-tool-*`
+    // executables shared across host projects), routed via `global_config_dir`.
+    let plugins_dir = config.global_config_dir.join("plugins");
     if !plugins_dir.exists() {
         std::fs::create_dir_all(&plugins_dir).with_context(|| {
             format!(

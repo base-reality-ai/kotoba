@@ -249,10 +249,11 @@ pub async fn run_spec(
             embed_model,
         );
 
-        let capture =
-            crate::conversation::run_conversation_capture(&prompt, "print", client, &registry)
-                .await
-                .with_context(|| format!("Turn '{}' failed", label))?;
+        let capture = crate::conversation::run_conversation_capture_in_config_dir(
+            &prompt, "print", client, &registry, config_dir,
+        )
+        .await
+        .with_context(|| format!("Turn '{}' failed", label))?;
         let response = &capture.text;
 
         println!("\n## {}\n\n{}", label, response);

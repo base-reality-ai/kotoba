@@ -1,7 +1,8 @@
 //! Headless log sink for long-running dm modes (print / daemon / web / chain).
 //!
-//! Writes to `~/.dm/logs/<mode>-<YYYY-MM-DD>.log`. Rolls over on date change
-//! (for processes that cross midnight) and at 50 MB per file via
+//! Writes to `<config_dir>/logs/<mode>-<YYYY-MM-DD>.log` when initialized with
+//! a config root, or `~/.dm/logs/<mode>-<YYYY-MM-DD>.log` for legacy callers.
+//! Rolls over on date change (for processes that cross midnight) and at 50 MB per file via
 //! `<mode>-<date>.<N>.log` numbered suffixes. Files older than 7 days are
 //! pruned at init time.
 //!
@@ -171,11 +172,7 @@ fn open_sink(dir: &Path, mode: &str) -> std::io::Result<Sink> {
     })
 }
 
-/// Initialize the headless log sink for `mode` ("print", "daemon", "web",
-/// "chain"). Creates the log dir if missing, prunes files older than
-/// `RETENTION_DAYS` by mtime, and opens the day's log file for append.
-pub fn init(mode: &str) -> std::io::Result<()> {
-    let dir = log_dir();
+fn init_at(mode: &str, dir: PathBuf) -> std::io::Result<()> {
     std::fs::create_dir_all(&dir)?;
     let cutoff = SystemTime::now()
         .checked_sub(Duration::from_secs(RETENTION_DAYS as u64 * 24 * 60 * 60))
@@ -187,6 +184,28 @@ pub fn init(mode: &str) -> std::io::Result<()> {
     let mut guard = sink_cell().lock().unwrap_or_else(|p| p.into_inner());
     *guard = Some(sink);
     Ok(())
+}
+
+/// Initialize the headless log sink for `mode` ("print", "daemon", "web",
+/// "chain"). Creates the log dir if missing, prunes files older than
+/// `RETENTION_DAYS` by mtime, and opens the day's log file for append.
+///
+/// Legacy callers without an identity-aware config root use `log_dir()`,
+/// which defaults to `~/.dm/logs`.
+pub fn init(mode: &str) -> std::io::Result<()> {
+    init_at(mode, log_dir())
+}
+
+/// Initialize the headless log sink under `<config_dir>/logs`.
+///
+/// Host-mode callers should prefer this so runtime logs follow
+/// `Config::config_dir` and land beside the host project's sessions, daemon
+/// socket, and web token.
+pub fn init_in_config_dir(mode: &str, config_dir: &Path) -> std::io::Result<()> {
+    if let Ok(override_dir) = std::env::var(LOG_DIR_ENV) {
+        return init_at(mode, PathBuf::from(override_dir));
+    }
+    init_at(mode, config_dir.join("logs"))
 }
 
 /// Append a timestamped line to the active log. Silent noop if `init` was
@@ -271,6 +290,12 @@ mod tests {
             std::env::set_var(LOG_DIR_ENV, dir);
             Self { prev }
         }
+
+        fn clear() -> Self {
+            let prev = std::env::var(LOG_DIR_ENV).ok();
+            std::env::remove_var(LOG_DIR_ENV);
+            Self { prev }
+        }
     }
 
     impl Drop for EnvGuard {
@@ -296,6 +321,20 @@ mod tests {
         assert!(sub.exists(), "log dir should have been created");
         let today = today_str();
         let expected = sub.join(format!("print-{today}.log"));
+        assert!(expected.exists(), "expected file {expected:?}");
+    }
+
+    #[test]
+    fn init_in_config_dir_uses_project_logs_dir() {
+        let _lock = TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _env = EnvGuard::clear();
+
+        init_in_config_dir("web", tmp.path()).expect("init in config dir");
+        shutdown();
+
+        let today = today_str();
+        let expected = tmp.path().join("logs").join(format!("web-{today}.log"));
         assert!(expected.exists(), "expected file {expected:?}");
     }
 

@@ -2,44 +2,36 @@ use crate::daemon::protocol::{DaemonEvent, DaemonRequest};
 use anyhow::Context;
 use std::path::PathBuf;
 
+/// Resolve the dm config dir using the project's identity-aware routing.
+///
+/// Kernel mode → `~/.dm`. Host mode → `<project_root>/.dm`. Mirrors
+/// `Config::config_dir` semantics; see
+/// `.dm/wiki/concepts/identity-config-routing.md`. Used by daemon helpers
+/// that have no `&Config` in scope (CLI guards, web mode probes).
 fn dm_config_dir() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join(".dm")
-}
-
-fn host_daemon_stem() -> Option<String> {
+    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
     let identity = crate::identity::load_for_cwd();
-    identity
-        .is_host()
-        .then(|| identity.display_name().to_string())
+    crate::config::compute_config_dir(&home, &identity)
 }
 
 /// Returns the path to the daemon Unix socket.
 ///
-/// Kernel mode preserves the legacy singleton at `~/.dm/daemon.sock`.
-/// Host mode scopes the daemon to `~/.dm/daemons/<host_project>.sock` so
-/// multiple spawned projects do not collide with each other or canonical dm.
+/// - `kernel` mode → `~/.dm/daemon.sock` (legacy singleton, unchanged).
+/// - `host` mode → `<project_root>/.dm/daemon.sock`. Scoping is achieved
+///   by `config_dir` already pointing at the project root; no per-host
+///   filename suffix is needed because each host project has its own
+///   `.dm/`. Two host projects never collide with each other or with
+///   canonical dm.
 pub fn daemon_socket_path() -> PathBuf {
-    match host_daemon_stem() {
-        Some(stem) => dm_config_dir()
-            .join("daemons")
-            .join(format!("{}.sock", stem)),
-        None => dm_config_dir().join("daemon.sock"),
-    }
+    dm_config_dir().join("daemon.sock")
 }
 
 /// Returns the path to the daemon PID file.
 ///
-/// Kernel mode preserves the legacy singleton at `~/.dm/daemon.pid`.
-/// Host mode scopes the PID file beside the host daemon socket.
+/// Routing matches `daemon_socket_path`: `~/.dm/daemon.pid` in kernel
+/// mode, `<project_root>/.dm/daemon.pid` in host mode.
 pub fn daemon_pid_path() -> PathBuf {
-    match host_daemon_stem() {
-        Some(stem) => dm_config_dir()
-            .join("daemons")
-            .join(format!("{}.pid", stem)),
-        None => dm_config_dir().join("daemon.pid"),
-    }
+    dm_config_dir().join("daemon.pid")
 }
 
 /// Returns true if a daemon socket exists AND is connectable.
@@ -242,6 +234,15 @@ mod tests {
     }
 
     fn with_identity_cwd(identity_toml: Option<&str>, f: impl FnOnce(&Path)) {
+        with_identity_cwd_value(identity_toml, |p| {
+            f(p);
+        });
+    }
+
+    /// Generic version of `with_identity_cwd` that returns the closure's
+    /// value — used when a test needs to capture a path computed under
+    /// the temp identity (e.g. comparing two host projects' daemon sockets).
+    fn with_identity_cwd_value<T>(identity_toml: Option<&str>, f: impl FnOnce(&Path) -> T) -> T {
         let _cwd_guard = crate::tools::CWD_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
@@ -254,7 +255,7 @@ mod tests {
             std::fs::write(dm_dir.join("identity.toml"), identity_toml).expect("write identity");
         }
         std::env::set_current_dir(temp.path()).expect("set temp cwd");
-        f(temp.path());
+        f(temp.path())
     }
 
     #[test]
@@ -294,28 +295,50 @@ mod tests {
     }
 
     #[test]
-    fn daemon_paths_are_scoped_by_host_identity() {
+    fn host_daemon_paths_route_to_project_dm() {
+        // Run-31 Tier 3: daemon socket/pid follow `Config::config_dir`
+        // routing — kernel keeps `~/.dm/daemon.sock`, host lands in the
+        // project's `.dm/daemon.sock` (no `daemons/<host>.sock` suffix
+        // because the project root already scopes the path).
         with_identity_cwd(
             Some("mode = \"host\"\nhost_project = \"finance-app\"\n"),
-            |_| {
+            |project_root| {
                 let sock = daemon_socket_path();
                 let pid = daemon_pid_path();
                 assert_eq!(
                     sock.file_name().and_then(|n| n.to_str()),
-                    Some("finance-app.sock")
+                    Some("daemon.sock"),
+                    "host-mode socket name matches kernel-mode (project root scopes the path)"
                 );
+                assert_eq!(pid.file_name().and_then(|n| n.to_str()), Some("daemon.pid"));
                 assert_eq!(
-                    pid.file_name().and_then(|n| n.to_str()),
-                    Some("finance-app.pid")
-                );
-                assert_eq!(
-                    sock.parent()
-                        .and_then(|p| p.file_name())
-                        .and_then(|n| n.to_str()),
-                    Some("daemons")
+                    sock.parent(),
+                    Some(project_root.join(".dm").as_path()),
+                    "host daemon paths must live under <project>/.dm, not ~/.dm"
                 );
             },
         );
+    }
+
+    #[test]
+    fn host_and_kernel_daemon_paths_do_not_collide() {
+        // Two host projects on the same machine — and canonical dm —
+        // each get their own daemon socket. The legacy `~/.dm/daemons/`
+        // workaround was load-bearing only because socket paths were all
+        // under `~/.dm/`; with project-scoped routing the collision risk
+        // is gone by construction.
+        let host_a_sock =
+            with_identity_cwd_value(Some("mode = \"host\"\nhost_project = \"alpha\"\n"), |_| {
+                daemon_socket_path()
+            });
+        let host_b_sock =
+            with_identity_cwd_value(Some("mode = \"host\"\nhost_project = \"beta\"\n"), |_| {
+                daemon_socket_path()
+            });
+        let kernel_sock = with_identity_cwd_value(None, |_| daemon_socket_path());
+        assert_ne!(host_a_sock, host_b_sock);
+        assert_ne!(host_a_sock, kernel_sock);
+        assert_ne!(host_b_sock, kernel_sock);
     }
 
     #[test]

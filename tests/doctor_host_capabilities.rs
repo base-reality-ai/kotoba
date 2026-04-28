@@ -71,6 +71,7 @@ fn test_config(config_dir: std::path::PathBuf) -> Config {
         model_is_default: false,
         tool_model: None,
         embed_model: "nomic-embed-text".to_string(),
+        global_config_dir: config_dir.clone(),
         config_dir,
         routing: None,
         aliases: HashMap::new(),

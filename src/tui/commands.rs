@@ -1037,7 +1037,7 @@ pub async fn execute(
             let parts: Vec<&str> = arg.splitn(3, ' ').filter(|s| !s.is_empty()).collect();
             if parts.is_empty() {
                 // /config — show current settings.json
-                let settings_path = app.config_dir.join("settings.json");
+                let settings_path = app.global_config_dir.join("settings.json");
                 let content = std::fs::read_to_string(&settings_path)
                     .unwrap_or_else(|_| "(no settings.json found)".to_string());
                 app.push_entry(
@@ -1075,7 +1075,7 @@ pub async fn execute(
                 // /config set <key> <value>
                 let key = parts[1];
                 let value = parts[2];
-                let settings_path = app.config_dir.join("settings.json");
+                let settings_path = app.global_config_dir.join("settings.json");
                 let mut settings: serde_json::Value = std::fs::read_to_string(&settings_path)
                     .ok()
                     .and_then(|s| serde_json::from_str(&s).ok())
@@ -1332,6 +1332,7 @@ pub async fn execute(
                 tool_model: None,
                 embed_model: "nomic-embed-text".to_string(),
                 config_dir: app.config_dir.clone(),
+                global_config_dir: app.config_dir.clone(),
                 routing: None,
                 aliases: std::collections::HashMap::new(),
                 max_retries: 3,
@@ -1948,9 +1949,10 @@ pub async fn execute(
         }
         SlashCommand::Pr(base_arg) => return handle_pr(base_arg, app).await,
         SlashCommand::Template(arg) => {
-            let config_dir = dirs::home_dir()
-                .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
-                .join(".dm");
+            // Templates are operator-level (custom slash commands the operator
+            // builds up across host projects); read from global_config_dir
+            // rather than the project-scoped config_dir.
+            let config_dir = app.global_config_dir.clone();
             if arg.is_empty() {
                 // List available templates
                 let templates = crate::templates::list_templates(&config_dir);

@@ -164,4 +164,41 @@ mod tests {
         let rules = load_rules(dir.path()).unwrap();
         assert!(rules.is_empty());
     }
+
+    // -- Tier 5 routing assertion ----------------------------------------
+    //
+    // Permissions live in `settings.json`, the same file `Config::load`
+    // reads operator-level Ollama host/model defaults from. Every
+    // production caller of `load_rules` must pass `Config::global_config_dir`
+    // (not `Config::config_dir`), otherwise host-mode dm reads the
+    // operator's allow/deny list from `<project>/.dm/settings.json` —
+    // a separate file from where Config picked up the rest of the
+    // settings. The regression this guards against: silently dropping
+    // an operator's `bash(rm -rf)` deny rule the moment they cd into
+    // a host project.
+    #[test]
+    fn load_rules_reads_settings_json_at_dir_root() {
+        let global = TempDir::new().unwrap();
+        let project = TempDir::new().unwrap();
+        std::fs::write(
+            global.path().join("settings.json"),
+            r#"{"allow":["read_file"],"deny":["bash(rm -rf /)"]}"#,
+        )
+        .unwrap();
+        // The project dir has no settings.json — load_rules must come
+        // up empty there, proving callers that pass the project dir
+        // would silently lose the operator's rules.
+        let project_rules = load_rules(project.path()).unwrap();
+        assert!(
+            project_rules.is_empty(),
+            "project dir without settings.json must yield no rules"
+        );
+
+        let global_rules = load_rules(global.path()).unwrap();
+        assert_eq!(
+            global_rules.len(),
+            2,
+            "global settings.json must yield both rules"
+        );
+    }
 }

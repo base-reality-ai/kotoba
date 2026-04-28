@@ -286,7 +286,7 @@ pub fn build_router(state: ApiState) -> Router {
 }
 
 pub async fn run(state: ApiState, port: u16) -> Result<()> {
-    let _ = crate::logging::init("web");
+    let _ = crate::logging::init_in_config_dir("web", &state.config.config_dir);
     let router = build_router(state);
     let addr = format!("127.0.0.1:{}", port);
     let listener = tokio::net::TcpListener::bind(&addr).await?;
@@ -369,8 +369,14 @@ async fn chat_handler(
         &state.config.embed_model,
     );
 
-    match crate::conversation::run_conversation_capture(&req.prompt, "api", &client, &registry)
-        .await
+    match crate::conversation::run_conversation_capture_in_config_dir(
+        &req.prompt,
+        "api",
+        &client,
+        &registry,
+        &state.config.config_dir,
+    )
+    .await
     {
         Ok(capture) => Json(json!({"response": capture.text, "model": model})).into_response(),
         Err(e) => (
@@ -1409,6 +1415,7 @@ mod tests {
                 model_is_default: false,
                 tool_model: None,
                 embed_model: "nomic-embed-text".into(),
+                global_config_dir: config_dir.clone(),
                 config_dir,
                 routing: None,
                 aliases: std::collections::HashMap::new(),
@@ -1634,6 +1641,40 @@ mod tests {
     }
 
     #[test]
+    fn web_paths_route_to_project_dm_in_host_mode() {
+        // Tier 4: web auth token + last-port cache piggyback on
+        // `Config::config_dir`, so they auto-inherit Tier 1's routing.
+        // In host mode `<project>/.dm/web.token` and
+        // `<project>/.dm/web.last_port` keep each spawned project's
+        // web instance independent. Two host projects on the same
+        // machine never share a token (security boundary) or fight
+        // over the same port cache.
+        let home = std::path::Path::new("/home/alice");
+        let host_identity = crate::identity::Identity {
+            mode: crate::identity::Mode::Host,
+            host_project: Some("kotoba".into()),
+            canonical_dm_revision: None,
+            canonical_dm_repo: None,
+            source: Some(std::path::PathBuf::from(
+                "/home/alice/dev/kotoba/.dm/identity.toml",
+            )),
+        };
+        let host_config_dir = crate::config::compute_config_dir(home, &host_identity);
+        assert_eq!(
+            token_path(&host_config_dir),
+            std::path::PathBuf::from("/home/alice/dev/kotoba/.dm/web.token"),
+        );
+
+        let kernel_identity = crate::identity::Identity::default_kernel();
+        let kernel_config_dir = crate::config::compute_config_dir(home, &kernel_identity);
+        assert_eq!(
+            token_path(&kernel_config_dir),
+            std::path::PathBuf::from("/home/alice/.dm/web.token"),
+            "kernel mode keeps the legacy ~/.dm/web.token path",
+        );
+    }
+
+    #[test]
     fn write_last_port_overwrites_previous_value() {
         let dir = tempfile::tempdir().unwrap();
         write_last_port(dir.path(), 8080);
@@ -1665,6 +1706,7 @@ mod tests {
                 model_is_default: false,
                 tool_model: None,
                 embed_model: "nomic-embed-text".into(),
+                global_config_dir: config_dir.clone(),
                 config_dir,
                 routing: None,
                 aliases: std::collections::HashMap::new(),
@@ -2262,6 +2304,7 @@ skip_permissions_warning: true
                 tool_model: None,
                 embed_model: "nomic-embed-text".into(),
                 config_dir: std::path::PathBuf::from("/tmp"),
+                global_config_dir: std::path::PathBuf::from("/tmp"),
                 routing: None,
                 aliases: std::collections::HashMap::new(),
                 max_retries: 3,

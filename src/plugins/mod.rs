@@ -2,7 +2,11 @@
 //!
 //! Scans `<config_dir>/plugins/` for executable `dm-tool-<name>` binaries,
 //! validates names, and returns deterministic plugin metadata for registration
-//! with the tool surface.
+//! with the tool surface. Plugins are operator-level: every production caller
+//! passes `Config::global_config_dir`, so an operator's `~/.dm/plugins/dm-tool-*`
+//! executables remain discoverable across host projects rather than being
+//! shadowed by project-local routing. See
+//! `.dm/wiki/concepts/identity-config-routing.md`.
 
 use std::path::{Path, PathBuf};
 

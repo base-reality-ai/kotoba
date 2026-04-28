@@ -1,7 +1,11 @@
 //! Custom user prompt templates.
 //!
 //! Scans and manages markdown template files stored in `~/.dm/templates/`
-//! for reuse in standard chain or agent runs.
+//! for reuse in standard chain or agent runs. Templates are operator-level:
+//! every production caller passes `Config::global_config_dir`, so a host
+//! project inherits the operator's `~/.dm/templates/*.md` slash commands
+//! rather than looking for a project-local copy. See
+//! `.dm/wiki/concepts/identity-config-routing.md`.
 
 use std::path::Path;
 
@@ -455,6 +459,50 @@ mod tests {
         assert!(
             !result.contains("{{"),
             "no unresolved placeholders should remain: {result}"
+        );
+    }
+
+    // -- Routing ---------------------------------------------------------
+    //
+    // Templates are operator-level — every production caller passes
+    // `Config::global_config_dir`. The templates module itself is purely
+    // path-relative (it sees only the directory it's handed), so the
+    // proof we want is: a template installed under the global root is
+    // discoverable while a template only present under a project-scoped
+    // dir is invisible to the operator-global lookup. That's what every
+    // production call site relies on.
+    #[test]
+    fn templates_only_discovered_in_global_dir_when_callers_pass_global() {
+        let global = make_tempdir();
+        let project = make_tempdir();
+        let global_templates = global.join("templates");
+        let project_templates = project.join("templates");
+        fs::create_dir_all(&global_templates).unwrap();
+        fs::create_dir_all(&project_templates).unwrap();
+
+        fs::write(
+            global_templates.join("operator-template.md"),
+            "---\ndescription: Op-level\n---\nbody",
+        )
+        .unwrap();
+        fs::write(
+            project_templates.join("project-template.md"),
+            "---\ndescription: Should be invisible to global lookup\n---\nbody",
+        )
+        .unwrap();
+
+        // Production callers pass the global dir → only operator-template
+        // surfaces, exactly matching what `dm --templates` and the
+        // `/template` slash command see in host mode after Tier 5.
+        let names: Vec<String> = list_templates(&global)
+            .into_iter()
+            .map(|t| t.name)
+            .collect();
+        assert!(names.contains(&"operator-template".to_string()));
+        assert!(
+            !names.contains(&"project-template".to_string()),
+            "project-local templates must not leak into operator lookup: {:?}",
+            names
         );
     }
 }

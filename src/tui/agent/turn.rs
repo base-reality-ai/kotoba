@@ -84,6 +84,7 @@ pub async fn run_turn(
     session: &mut Session,
     engine: &mut PermissionEngine,
     config_dir: &Path,
+    settings_dir: &Path,
     event_tx: &mpsc::Sender<BackendEvent>,
     cancel_rx: &tokio::sync::watch::Receiver<bool>,
     plan_mode: bool,
@@ -749,6 +750,7 @@ pub async fn run_turn(
             messages,
             cancel_rx,
             config_dir,
+            settings_dir,
             session,
             plan_mode,
         )

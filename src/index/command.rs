@@ -17,7 +17,7 @@ use std::path::Path;
 use std::time::{Duration, UNIX_EPOCH};
 
 pub async fn run_index(embed_client: &OllamaClient, config_dir: &Path) -> Result<()> {
-    let _ = crate::logging::init("index");
+    let _ = crate::logging::init_in_config_dir("index", config_dir);
     let cwd = std::env::current_dir()?;
     let project_id = project_hash(&cwd);
     let index_dir = config_dir.join("index").join(&project_id);
@@ -116,7 +116,7 @@ pub async fn run_index_watch(embed_client: &OllamaClient, config_dir: &Path) -> 
     use notify::{RecommendedWatcher, RecursiveMode, Watcher};
     use std::sync::mpsc;
 
-    let _ = crate::logging::init("index");
+    let _ = crate::logging::init_in_config_dir("index", config_dir);
     let cwd = std::env::current_dir()?;
     let project_id = project_hash(&cwd);
     let index_dir = config_dir.join("index").join(&project_id);

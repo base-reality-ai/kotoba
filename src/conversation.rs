@@ -587,13 +587,14 @@ pub async fn run_conversation(
     engine: &mut PermissionEngine,
     session: &mut Session,
     config_dir: &Path,
+    settings_dir: &Path,
     verbose: bool,
     output_format: &str,
     max_turns: usize,
     perf: bool,
     fallback_model: Option<&str>,
 ) -> Result<()> {
-    let _ = crate::logging::init(mode);
+    let _ = crate::logging::init_in_config_dir(mode, config_dir);
     // Best-effort: ensure the project's .dm/wiki/ scaffold exists. Idempotent.
     // Pillar 3 of the directive; failure is non-fatal and surfaces via warnings.
     // Wiki context injection itself is handled in build_system_prompt_full_with_tools,
@@ -1197,12 +1198,12 @@ pub async fn run_conversation(
                     }
                     UserChoice::AlwaysAllow => {
                         engine.add_settings_rule(Rule::tool_wide(tool_name, Behavior::Allow));
-                        engine.save_settings(config_dir).ok();
+                        engine.save_settings(settings_dir).ok();
                         true
                     }
                     UserChoice::AlwaysDeny => {
                         engine.add_settings_rule(Rule::tool_wide(tool_name, Behavior::Deny));
-                        engine.save_settings(config_dir).ok();
+                        engine.save_settings(settings_dir).ok();
                         session.push_message(tool_result_msg(
                             tool_name,
                             "User permanently denied this action.",
@@ -1461,7 +1462,7 @@ pub async fn run_conversation_capture(
     client: &OllamaClient,
     registry: &ToolRegistry,
 ) -> Result<CaptureResult> {
-    run_conversation_capture_with_turns(
+    run_conversation_capture_with_turns_inner(
         prompt,
         mode,
         client,
@@ -1470,6 +1471,28 @@ pub async fn run_conversation_capture(
         RetrySettings::default(),
         None,
         None,
+        None,
+    )
+    .await
+}
+
+pub async fn run_conversation_capture_in_config_dir(
+    prompt: &str,
+    mode: &str,
+    client: &OllamaClient,
+    registry: &ToolRegistry,
+    config_dir: &Path,
+) -> Result<CaptureResult> {
+    run_conversation_capture_with_turns_inner(
+        prompt,
+        mode,
+        client,
+        registry,
+        DEFAULT_MAX_TURNS,
+        RetrySettings::default(),
+        None,
+        None,
+        Some(config_dir),
     )
     .await
 }
@@ -1488,7 +1511,37 @@ pub async fn run_conversation_capture_with_turns(
     system_prompt: Option<&str>,
     fallback_model: Option<&str>,
 ) -> Result<CaptureResult> {
-    let _ = crate::logging::init(mode);
+    run_conversation_capture_with_turns_inner(
+        prompt,
+        mode,
+        client,
+        registry,
+        max_turns,
+        retry,
+        system_prompt,
+        fallback_model,
+        None,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_conversation_capture_with_turns_inner(
+    prompt: &str,
+    mode: &str,
+    client: &OllamaClient,
+    registry: &ToolRegistry,
+    max_turns: usize,
+    retry: RetrySettings,
+    system_prompt: Option<&str>,
+    fallback_model: Option<&str>,
+    log_config_dir: Option<&Path>,
+) -> Result<CaptureResult> {
+    if let Some(config_dir) = log_config_dir {
+        let _ = crate::logging::init_in_config_dir(mode, config_dir);
+    } else {
+        let _ = crate::logging::init(mode);
+    }
     let system = match system_prompt {
         Some(s) => s.to_string(),
         None => crate::system_prompt::build_system_prompt(&[], None).await,

@@ -42,6 +42,7 @@ async fn sse_stream_against_mock_ollama_emits_monotonic_ids() {
             tool_model: None,
             embed_model: "nomic-embed-text".into(),
             config_dir: std::path::PathBuf::from("/tmp"),
+            global_config_dir: std::path::PathBuf::from("/tmp"),
             routing: None,
             aliases: HashMap::new(),
             max_retries: 3,
