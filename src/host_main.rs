@@ -20,6 +20,7 @@ use anyhow::Context;
 use chrono::{DateTime, Utc};
 use dark_matter::host::install_host_capabilities;
 use dark_matter::session::Session;
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 mod domain;
@@ -43,6 +44,10 @@ async fn main() -> anyhow::Result<()> {
         Some("session") => {
             let opts = parse_session_args(&args[1..])?;
             run_session(opts).await
+        }
+        Some("record-session") => {
+            let opts = parse_record_session_args(&args[1..])?;
+            run_record_session_command(opts)
         }
         Some("dm") => {
             // Forward remaining args to dm's CLI.
@@ -77,7 +82,11 @@ fn print_help() {
         "    kotoba session [--persona N]    Plan→converse→record loop (default persona: Yuki)"
     );
     println!("    kotoba session --plan-only      Print the planner brief and exit (no TUI)");
+    println!("    kotoba session --daemon         Record the session in a detached kotoba worker");
+    println!("    kotoba session --status         Show the latest detached recorder status");
     println!("    kotoba session --yes            Skip the [Y/n] confirm and launch immediately");
+    println!("    kotoba record-session --session-id ID --persona N");
+    println!("                                    Worker command used by session --daemon");
     println!("    kotoba dm [ARGS]                Pass through to the dm kernel CLI");
     println!("    kotoba help                     Show this message");
     println!("    kotoba version                  Show kotoba's version");
@@ -145,6 +154,8 @@ struct SessionOpts {
     persona: String,
     plan_only: bool,
     auto_confirm: bool,
+    daemon: bool,
+    status: bool,
     recent_struggle_days: i64,
 }
 
@@ -154,9 +165,28 @@ impl Default for SessionOpts {
             persona: "Yuki".to_string(),
             plan_only: false,
             auto_confirm: false,
+            daemon: false,
+            status: false,
             recent_struggle_days: 3,
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RecordSessionOpts {
+    session_id: String,
+    persona: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct RecorderStatus {
+    state: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    persona: Option<String>,
+    updated_at: String,
+    message: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -245,6 +275,14 @@ fn parse_session_args(rest: &[String]) -> anyhow::Result<SessionOpts> {
                 opts.plan_only = true;
                 i += 1;
             }
+            "--daemon" => {
+                opts.daemon = true;
+                i += 1;
+            }
+            "--status" => {
+                opts.status = true;
+                i += 1;
+            }
             "--yes" | "-y" => {
                 opts.auto_confirm = true;
                 i += 1;
@@ -260,7 +298,7 @@ fn parse_session_args(rest: &[String]) -> anyhow::Result<SessionOpts> {
             }
             "--help" | "-h" => {
                 anyhow::bail!(
-                    "kotoba session [--persona NAME] [--plan-only] [--yes] [--days N]\n  Plans, runs, and records one Japanese-learning session."
+                    "kotoba session [--persona NAME] [--plan-only] [--daemon] [--status] [--yes] [--days N]\n  Plans, runs, and records one Japanese-learning session."
                 );
             }
             other => {
@@ -274,8 +312,62 @@ fn parse_session_args(rest: &[String]) -> anyhow::Result<SessionOpts> {
     Ok(opts)
 }
 
+fn parse_record_session_args(rest: &[String]) -> anyhow::Result<RecordSessionOpts> {
+    let mut session_id = None;
+    let mut persona = "Yuki".to_string();
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--session-id" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| anyhow::anyhow!("--session-id requires a value"))?;
+                session_id = Some(value.clone());
+                i += 2;
+            }
+            v if v.starts_with("--session-id=") => {
+                session_id = Some(v.trim_start_matches("--session-id=").to_string());
+                i += 1;
+            }
+            "--persona" | "-p" => {
+                let value = rest
+                    .get(i + 1)
+                    .ok_or_else(|| anyhow::anyhow!("--persona requires a value"))?;
+                persona = value.clone();
+                i += 2;
+            }
+            v if v.starts_with("--persona=") => {
+                persona = v.trim_start_matches("--persona=").to_string();
+                i += 1;
+            }
+            "--help" | "-h" => {
+                anyhow::bail!(
+                    "kotoba record-session --session-id ID [--persona NAME]\n  Records a saved dm session transcript into kotoba's wiki."
+                );
+            }
+            other => {
+                anyhow::bail!(
+                    "unknown argument {:?} for `kotoba record-session`. Try: kotoba record-session --help",
+                    other
+                );
+            }
+        }
+    }
+    Ok(RecordSessionOpts {
+        session_id: session_id.ok_or_else(|| anyhow::anyhow!("--session-id is required"))?,
+        persona,
+    })
+}
+
 async fn run_session(opts: SessionOpts) -> anyhow::Result<()> {
     let project_root = std::env::current_dir().context("locate project root")?;
+    let config_dir = dm_config_dir()?;
+
+    if opts.status {
+        print_recorder_status(&config_dir)?;
+        return Ok(());
+    }
+
     let model_config = KotobaModelConfig::load(&project_root);
     let today = Utc::now().date_naive();
     let brief = host_caps::plan_session_in(
@@ -307,7 +399,6 @@ async fn run_session(opts: SessionOpts) -> anyhow::Result<()> {
         opts.persona, persona_body, brief
     );
 
-    let config_dir = dm_config_dir()?;
     let baseline = Utc::now();
 
     println!(
@@ -324,14 +415,17 @@ async fn run_session(opts: SessionOpts) -> anyhow::Result<()> {
 
     let after = Utc::now();
     let new_session = latest_session_after(&config_dir, baseline)?;
-    let summary = match new_session {
+    let session = match new_session {
         Some(session) => {
-            let transcript = format_transcript(&session);
-            if transcript.trim().is_empty() {
-                println!("Session ended with no transcript content; recorder skipped.");
+            if opts.daemon {
+                spawn_recorder_child(&project_root, &config_dir, &session.id, &opts.persona)?;
+                println!(
+                    "Recorder queued in detached kotoba worker for session {}.",
+                    session.id
+                );
                 return Ok(());
             }
-            host_caps::record_session_in(&project_root, &transcript, &opts.persona, after)?
+            session
         }
         None => {
             println!(
@@ -343,8 +437,47 @@ async fn run_session(opts: SessionOpts) -> anyhow::Result<()> {
         }
     };
 
+    let summary = record_loaded_session(&project_root, &session, &opts.persona, after)?;
     print_summary_lines(&summary);
     Ok(())
+}
+
+fn run_record_session_command(opts: RecordSessionOpts) -> anyhow::Result<()> {
+    let project_root = std::env::current_dir().context("locate project root")?;
+    let config_dir = dm_config_dir()?;
+    write_recorder_status(
+        &config_dir,
+        RecorderStatus::running(&opts.session_id, &opts.persona, "recording session"),
+    )?;
+
+    match record_session_by_id(
+        &project_root,
+        &config_dir,
+        &opts.session_id,
+        &opts.persona,
+        Utc::now(),
+    ) {
+        Ok(summary) => {
+            let message = format!(
+                "recorded {} vocab item(s), {} struggle(s), sessions_count={}",
+                summary.vocabulary_count, summary.struggle_count, summary.sessions_count
+            );
+            write_recorder_status(
+                &config_dir,
+                RecorderStatus::done(&opts.session_id, &opts.persona, &message),
+            )?;
+            print_summary_lines(&summary);
+            Ok(())
+        }
+        Err(err) => {
+            let message = err.to_string();
+            let _ = write_recorder_status(
+                &config_dir,
+                RecorderStatus::error(&opts.session_id, &opts.persona, &message),
+            );
+            Err(err)
+        }
+    }
 }
 
 fn session_dm_args(system_prompt: &str, model_config: &KotobaModelConfig) -> Vec<String> {
@@ -401,6 +534,31 @@ fn latest_session_after(
         .find(|s| s.created_at >= baseline || s.updated_at >= baseline))
 }
 
+fn record_session_by_id(
+    project_root: &Path,
+    config_dir: &Path,
+    session_id: &str,
+    persona: &str,
+    now: DateTime<Utc>,
+) -> anyhow::Result<host_caps::SessionRecordSummary> {
+    let session = dark_matter::session::storage::load(config_dir, session_id)
+        .with_context(|| format!("load session {}", session_id))?;
+    record_loaded_session(project_root, &session, persona, now)
+}
+
+fn record_loaded_session(
+    project_root: &Path,
+    session: &Session,
+    persona: &str,
+    now: DateTime<Utc>,
+) -> anyhow::Result<host_caps::SessionRecordSummary> {
+    let transcript = format_transcript(session);
+    if transcript.trim().is_empty() {
+        anyhow::bail!("session {} has no transcript content", session.id);
+    }
+    host_caps::record_session_in(project_root, &transcript, persona, now)
+}
+
 fn format_transcript(session: &Session) -> String {
     let mut out = String::new();
     for msg in &session.messages {
@@ -426,6 +584,114 @@ fn format_transcript(session: &Session) -> String {
         }
     }
     out
+}
+
+impl RecorderStatus {
+    fn new(session_id: &str, persona: &str, state: &str, message: &str) -> Self {
+        Self {
+            state: state.to_string(),
+            session_id: Some(session_id.to_string()),
+            persona: Some(persona.to_string()),
+            updated_at: Utc::now().to_rfc3339(),
+            message: message.to_string(),
+        }
+    }
+
+    fn queued(session_id: &str, persona: &str, message: &str) -> Self {
+        Self::new(session_id, persona, "queued", message)
+    }
+
+    fn running(session_id: &str, persona: &str, message: &str) -> Self {
+        Self::new(session_id, persona, "running", message)
+    }
+
+    fn done(session_id: &str, persona: &str, message: &str) -> Self {
+        Self::new(session_id, persona, "done", message)
+    }
+
+    fn error(session_id: &str, persona: &str, message: &str) -> Self {
+        Self::new(session_id, persona, "error", message)
+    }
+}
+
+fn recorder_status_path(config_dir: &Path) -> PathBuf {
+    config_dir.join("recorder-status.json")
+}
+
+fn recorder_log_path(config_dir: &Path) -> PathBuf {
+    config_dir.join("recorder.log")
+}
+
+fn write_recorder_status(config_dir: &Path, status: RecorderStatus) -> anyhow::Result<()> {
+    std::fs::create_dir_all(config_dir)?;
+    let json = serde_json::to_string_pretty(&status)?;
+    std::fs::write(recorder_status_path(config_dir), json)?;
+    Ok(())
+}
+
+fn read_recorder_status(config_dir: &Path) -> anyhow::Result<Option<RecorderStatus>> {
+    let path = recorder_status_path(config_dir);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let raw = std::fs::read_to_string(&path)?;
+    Ok(Some(serde_json::from_str(&raw)?))
+}
+
+fn print_recorder_status(config_dir: &Path) -> anyhow::Result<()> {
+    match read_recorder_status(config_dir)? {
+        Some(status) => {
+            println!("Recorder status: {}", status.state);
+            if let Some(session_id) = status.session_id {
+                println!("  session: {}", session_id);
+            }
+            if let Some(persona) = status.persona {
+                println!("  persona: {}", persona);
+            }
+            println!("  updated: {}", status.updated_at);
+            println!("  message: {}", status.message);
+        }
+        None => println!(
+            "Recorder status: none (no {} found)",
+            recorder_status_path(config_dir).display()
+        ),
+    }
+    Ok(())
+}
+
+fn spawn_recorder_child(
+    project_root: &Path,
+    config_dir: &Path,
+    session_id: &str,
+    persona: &str,
+) -> anyhow::Result<()> {
+    use std::fs::OpenOptions;
+    use std::process::Stdio;
+
+    write_recorder_status(
+        config_dir,
+        RecorderStatus::queued(session_id, persona, "recorder worker queued"),
+    )?;
+
+    let exe = std::env::current_exe().context("locate kotoba binary")?;
+    let log = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(recorder_log_path(config_dir))?;
+    let log_err = log.try_clone()?;
+    std::process::Command::new(exe)
+        .current_dir(project_root)
+        .arg("record-session")
+        .arg("--session-id")
+        .arg(session_id)
+        .arg("--persona")
+        .arg(persona)
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(log))
+        .stderr(Stdio::from(log_err))
+        .spawn()
+        .context("spawn detached recorder worker")?;
+    Ok(())
 }
 
 fn print_summary_lines(summary: &host_caps::SessionRecordSummary) {
@@ -470,6 +736,7 @@ mod session_cmd_tests {
             "--persona".into(),
             "Tanaka".into(),
             "--plan-only".into(),
+            "--daemon".into(),
             "--yes".into(),
             "--days".into(),
             "7".into(),
@@ -477,8 +744,35 @@ mod session_cmd_tests {
         .unwrap();
         assert_eq!(opts.persona, "Tanaka");
         assert!(opts.plan_only);
+        assert!(opts.daemon);
         assert!(opts.auto_confirm);
         assert_eq!(opts.recent_struggle_days, 7);
+    }
+
+    #[test]
+    fn parse_session_args_handles_status_flag() {
+        let opts = parse_session_args(&["--status".into()]).unwrap();
+        assert!(opts.status);
+    }
+
+    #[test]
+    fn parse_record_session_args_requires_session_id() {
+        let err = parse_record_session_args(&["--persona".into(), "Yuki".into()])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("--session-id"), "err was: {}", err);
+    }
+
+    #[test]
+    fn parse_record_session_args_handles_session_and_persona() {
+        let opts = parse_record_session_args(&[
+            "--session-id".into(),
+            "abc123".into(),
+            "--persona=Hiro".into(),
+        ])
+        .unwrap();
+        assert_eq!(opts.session_id, "abc123");
+        assert_eq!(opts.persona, "Hiro");
     }
 
     #[test]
@@ -690,5 +984,59 @@ recorder_model = "recorder-from-toml"
 
         let found = latest_session_after(tmp.path(), baseline).unwrap();
         assert!(found.is_none());
+    }
+
+    #[test]
+    fn recorder_status_round_trips_project_local_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let status = RecorderStatus::queued("session-1", "Yuki", "queued for test");
+
+        write_recorder_status(tmp.path(), status).unwrap();
+        let loaded = read_recorder_status(tmp.path()).unwrap().unwrap();
+
+        assert_eq!(loaded.state, "queued");
+        assert_eq!(loaded.session_id.as_deref(), Some("session-1"));
+        assert_eq!(loaded.persona.as_deref(), Some("Yuki"));
+        assert_eq!(loaded.message, "queued for test");
+        assert!(recorder_status_path(tmp.path()).exists());
+    }
+
+    #[test]
+    fn record_session_by_id_loads_saved_session_and_updates_wiki() {
+        let project = tempfile::TempDir::new().unwrap();
+        let config_dir = project.path().join(".dm");
+        let now = Utc::now();
+        let mut session = Session::new(project.path().display().to_string(), "mock-model".into());
+        session.id = "session-record-test".into();
+        session.created_at = now;
+        session.updated_at = now;
+        session.push_message(json!({"role": "system", "content": "skip me"}));
+        session.push_message(
+            json!({"role": "assistant", "content": "New word: 猫 (ねこ) means cat."}),
+        );
+        session.push_message(json!({"role": "user", "content": "what is て-form?"}));
+        dark_matter::session::storage::save(&config_dir, &session).unwrap();
+
+        let summary = record_session_by_id(
+            project.path(),
+            &config_dir,
+            "session-record-test",
+            "Yuki",
+            now,
+        )
+        .unwrap();
+
+        assert_eq!(summary.vocabulary_count, 1);
+        assert_eq!(summary.struggle_count, 1);
+        assert_eq!(summary.sessions_count, 1);
+        assert!(project
+            .path()
+            .join(".dm/wiki/entities/Vocabulary/猫.md")
+            .exists());
+        let persona =
+            std::fs::read_to_string(project.path().join(".dm/wiki/entities/Persona/Yuki.md"))
+                .unwrap();
+        assert!(persona.contains("sessions_count: 1"), "{}", persona);
+        assert!(persona.contains("て-form"), "{}", persona);
     }
 }

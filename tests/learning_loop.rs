@@ -98,7 +98,11 @@ fn empty_wiki_brief_is_starter_shaped() {
     // No persona registered yet — fallback line must be present.
     assert!(brief.contains("(none registered"), "{}", brief);
     // Empty wiki → starter focus + no-struggle hint.
-    assert!(brief.contains("Self-introduction and greetings"), "{}", brief);
+    assert!(
+        brief.contains("Self-introduction and greetings"),
+        "{}",
+        brief
+    );
     assert!(brief.contains("first session"), "{}", brief);
     assert!(brief.contains("No recent struggles"), "{}", brief);
 }
@@ -107,7 +111,10 @@ fn empty_wiki_brief_is_starter_shaped() {
 fn record_session_writes_three_vocab_one_struggle_page_and_bumps_persona() {
     let tmp = TempDir::new().unwrap();
     let root = tmp.path();
-    write(&root.join(".dm/wiki/entities/Persona/Yuki.md"), &yuki_seed());
+    write(
+        &root.join(".dm/wiki/entities/Persona/Yuki.md"),
+        &yuki_seed(),
+    );
 
     // Pin a session timestamp so struggles file path + persona log line
     // are deterministic.
@@ -115,8 +122,7 @@ fn record_session_writes_three_vocab_one_struggle_page_and_bumps_persona() {
         .unwrap()
         .with_timezone(&chrono::Utc);
 
-    let summary =
-        host_caps::record_session_in(root, synthetic_transcript(), "Yuki", now).unwrap();
+    let summary = host_caps::record_session_in(root, synthetic_transcript(), "Yuki", now).unwrap();
 
     // Recorder summary: 3 vocab + 2 struggles + sessions_count == 1.
     assert_eq!(summary.vocabulary_count, 3, "summary: {:?}", summary);
@@ -150,8 +156,7 @@ fn record_session_writes_three_vocab_one_struggle_page_and_bumps_persona() {
 
     // Persona page bumped + a sessions log entry was appended with the
     // exact timestamp + the topics the recorder inferred from struggles.
-    let persona =
-        std::fs::read_to_string(root.join(".dm/wiki/entities/Persona/Yuki.md")).unwrap();
+    let persona = std::fs::read_to_string(root.join(".dm/wiki/entities/Persona/Yuki.md")).unwrap();
     assert!(persona.contains("sessions_count: 1"), "{}", persona);
     assert!(persona.contains("2026-04-27 12:30:00"), "{}", persona);
     assert!(
@@ -173,7 +178,10 @@ fn loop_closes_planner_after_recorder_reflects_wiki_state() {
     // the user-visible proof that the loop closes.
     let tmp = TempDir::new().unwrap();
     let root = tmp.path();
-    write(&root.join(".dm/wiki/entities/Persona/Yuki.md"), &yuki_seed());
+    write(
+        &root.join(".dm/wiki/entities/Persona/Yuki.md"),
+        &yuki_seed(),
+    );
 
     let now = chrono::DateTime::parse_from_rfc3339("2026-04-27T12:30:00Z")
         .unwrap()
@@ -235,4 +243,74 @@ fn record_session_creates_persona_when_none_seeded() {
     assert!(hiro.contains("title: Hiro"), "{}", hiro);
     assert!(hiro.contains("sessions_count: 1"), "{}", hiro);
     assert!(hiro.contains("## Sessions log"), "{}", hiro);
+}
+
+#[test]
+fn record_session_attributes_segments_after_persona_switch() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    write(
+        &root.join(".dm/wiki/entities/Persona/Yuki.md"),
+        &yuki_seed(),
+    );
+    write(
+        &root.join(".dm/wiki/entities/Persona/Hiro.md"),
+        "---
+title: Hiro
+type: entity
+entity_kind: persona
+layer: host
+sessions_count: 0
+---
+
+# Hiro
+
+## Signature topics
+
+- Weekend plans
+
+## Sessions log
+
+",
+    );
+
+    let now = chrono::DateTime::parse_from_rfc3339("2026-04-27T12:30:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    let transcript = format!(
+        "\
+Yuki: New word: 学校 (がっこう) means school.
+Learner: I don't know は vs が?
+tool: {}Hiro'{}
+Hiro: New word: 猫 (ねこ) means cat.
+User: what is タメ口?
+",
+        host_caps::PERSONA_LOADED_PREFIX,
+        host_caps::PERSONA_LOADED_AFTER_NAME
+    );
+
+    let summary = host_caps::record_session_in(root, &transcript, "Yuki", now).unwrap();
+    assert_eq!(summary.persona, "Yuki, Hiro");
+    assert_eq!(summary.vocabulary_count, 2, "summary: {:?}", summary);
+    assert_eq!(summary.struggle_count, 2, "summary: {:?}", summary);
+
+    let yuki = std::fs::read_to_string(root.join(".dm/wiki/entities/Persona/Yuki.md")).unwrap();
+    assert!(yuki.contains("sessions_count: 1"), "{}", yuki);
+    assert!(
+        yuki.contains("words introduced: 学校 / がっこう (school)"),
+        "{}",
+        yuki
+    );
+    assert!(yuki.contains("struggles flagged: は vs が"), "{}", yuki);
+    assert!(!yuki.contains("タメ口"), "{}", yuki);
+
+    let hiro = std::fs::read_to_string(root.join(".dm/wiki/entities/Persona/Hiro.md")).unwrap();
+    assert!(hiro.contains("sessions_count: 1"), "{}", hiro);
+    assert!(
+        hiro.contains("words introduced: 猫 / ねこ (cat)"),
+        "{}",
+        hiro
+    );
+    assert!(hiro.contains("struggles flagged: タメ口"), "{}", hiro);
+    assert!(!hiro.contains("は vs が"), "{}", hiro);
 }

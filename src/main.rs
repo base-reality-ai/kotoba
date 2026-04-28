@@ -955,19 +955,17 @@ fn resolved_mcp_dir(requested: Option<McpScope>, config_dir: &Path) -> (McpScope
 // host tools when launched as `dm` or via `kotoba dm`. With the kernel-side
 // host/binary module-duplication fix in place (canonical commit a143b85),
 // this install populates the single dark_matter::host::HOST_CAPS slot.
-#[path = "host_caps.rs"]
-mod host_caps;
 #[path = "domain.rs"]
 #[allow(dead_code)]
 mod domain;
+#[path = "host_caps.rs"]
+mod host_caps;
 
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
     // Best-effort install — already-installed is fine (re-entrant launches,
     // tests). Failing here would block dm from launching at all.
-    let _ = dark_matter::host::install_host_capabilities(Box::new(
-        host_caps::KotobaCapabilities,
-    ));
+    let _ = dark_matter::host::install_host_capabilities(Box::new(host_caps::KotobaCapabilities));
 
     match run().await {
         Ok(()) => std::process::ExitCode::SUCCESS,

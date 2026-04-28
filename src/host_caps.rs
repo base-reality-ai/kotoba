@@ -56,6 +56,10 @@ pub(crate) fn slugify(input: &str) -> String {
 // host_invoke_persona
 // ---------------------------------------------------------------------------
 
+pub(crate) const PERSONA_LOADED_PREFIX: &str = "Persona '";
+pub(crate) const PERSONA_LOADED_AFTER_NAME: &str =
+    " loaded. The next agent turn should speak in this voice. Persona definition follows:";
+
 /// Switches the active conversational persona. Reads the named
 /// persona's wiki entity page (`.dm/wiki/entities/Persona/<name>.md`)
 /// and surfaces it as the system-prompt-shaped response so the next
@@ -110,8 +114,8 @@ impl Tool for InvokePersonaTool {
         let body = std::fs::read_to_string(&persona_path)?;
         Ok(ToolResult {
             content: format!(
-                "Persona '{}' loaded. The next agent turn should speak in this voice. Persona definition follows:\n\n{}",
-                name, body
+                "{}{}'{}\n\n{}",
+                PERSONA_LOADED_PREFIX, name, PERSONA_LOADED_AFTER_NAME, body
             ),
             is_error: false,
         })
@@ -663,6 +667,17 @@ pub(crate) struct PersonaSummary {
     pub signature_topics: Vec<String>,
 }
 
+/// Wiki state the planner needs, independent of whether the renderer is the
+/// current rule template or a future single-shot model call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PlannerWikiState {
+    pub requested_persona: String,
+    pub today: chrono::NaiveDate,
+    pub persona: Option<PersonaSummary>,
+    pub vocab: Vec<VocabSummary>,
+    pub struggles: Vec<String>,
+}
+
 /// Parse the leading YAML-ish frontmatter block (between two `---` lines).
 /// Returns key→value pairs. Values are trimmed; types are stringly. Returns
 /// an empty map if no frontmatter is present.
@@ -918,6 +933,108 @@ pub(crate) fn build_session_brief(
     s
 }
 
+pub(crate) fn collect_planner_wiki_state(
+    root: &std::path::Path,
+    persona_name: &str,
+    recent_days: i64,
+    today: chrono::NaiveDate,
+) -> PlannerWikiState {
+    PlannerWikiState {
+        requested_persona: persona_name.to_string(),
+        today,
+        persona: read_persona_summary(root, persona_name),
+        vocab: read_vocab_entries(root),
+        struggles: read_recent_struggles(root, recent_days, today),
+    }
+}
+
+#[allow(dead_code)]
+pub(crate) fn build_planner_prompt(state: &PlannerWikiState) -> String {
+    let mut s = String::new();
+    s.push_str("You are kotoba's pre-session planner.\n");
+    s.push_str("Produce a concise markdown session brief with exactly these sections:\n");
+    s.push_str("- Session brief header with date\n");
+    s.push_str("- Persona\n");
+    s.push_str("- Today's focus\n");
+    s.push_str("- Words to surface\n");
+    s.push_str("- Grammar / patterns to revisit\n");
+    s.push_str("- Conversational hook\n\n");
+
+    s.push_str("## Planner input\n\n");
+    s.push_str(&format!("- Date: {}\n", state.today));
+    s.push_str(&format!(
+        "- Requested persona: {}\n",
+        state.requested_persona
+    ));
+    match &state.persona {
+        Some(persona) => {
+            s.push_str(&format!(
+                "- Persona wiki entity: {} (sessions_count: {})\n",
+                persona.name, persona.sessions_count
+            ));
+            if persona.signature_topics.is_empty() {
+                s.push_str("- Signature topics: none recorded\n");
+            } else {
+                s.push_str(&format!(
+                    "- Signature topics: {}\n",
+                    persona.signature_topics.join("; ")
+                ));
+            }
+        }
+        None => s.push_str("- Persona wiki entity: missing\n"),
+    }
+
+    s.push_str("\n## Vocabulary candidates\n\n");
+    if state.vocab.is_empty() {
+        s.push_str("- none recorded\n");
+    } else {
+        let mut vocab = state.vocab.clone();
+        vocab.sort_by(|a, b| {
+            a.mastery
+                .priority()
+                .cmp(&b.mastery.priority())
+                .then_with(|| a.title.cmp(&b.title))
+        });
+        for item in vocab.iter().take(10) {
+            let kana = if item.kana.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", item.kana)
+            };
+            let meaning = if item.meaning.is_empty() {
+                String::new()
+            } else {
+                format!(" — {}", item.meaning)
+            };
+            s.push_str(&format!(
+                "- {}{}{} [mastery: {:?}]\n",
+                item.title, kana, meaning, item.mastery
+            ));
+        }
+    }
+
+    s.push_str("\n## Recent struggles\n\n");
+    if state.struggles.is_empty() {
+        s.push_str("- none recorded\n");
+    } else {
+        for struggle in &state.struggles {
+            s.push_str(struggle);
+            s.push('\n');
+        }
+    }
+
+    s
+}
+
+pub(crate) fn build_session_brief_from_state(state: &PlannerWikiState) -> String {
+    build_session_brief(
+        state.persona.as_ref(),
+        &state.vocab,
+        &state.struggles,
+        state.today,
+    )
+}
+
 /// Pure top-level entry point used both by [`PlanSessionTool::call`] and by
 /// unit tests. Wikiless invocations and partial-wiki invocations both yield
 /// a sensible brief — never an error.
@@ -927,10 +1044,8 @@ pub(crate) fn plan_session_in(
     recent_days: i64,
     today: chrono::NaiveDate,
 ) -> String {
-    let persona = read_persona_summary(root, persona_name);
-    let vocab = read_vocab_entries(root);
-    let struggles = read_recent_struggles(root, recent_days, today);
-    build_session_brief(persona.as_ref(), &vocab, &struggles, today)
+    let state = collect_planner_wiki_state(root, persona_name, recent_days, today);
+    build_session_brief_from_state(&state)
 }
 
 // ---------------------------------------------------------------------------
@@ -1040,6 +1155,157 @@ impl SessionRecordSummary {
 }
 
 pub(crate) fn record_session_in(
+    root: &Path,
+    transcript: &str,
+    persona: &str,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<SessionRecordSummary> {
+    let segments = split_persona_segments(transcript, persona);
+    if segments.len() > 1 {
+        let mut summaries = Vec::new();
+        for segment in segments {
+            summaries.push(record_persona_segment_in(
+                root,
+                &segment.transcript,
+                &segment.persona,
+                now,
+            )?);
+        }
+        return Ok(merge_segment_summaries(summaries, persona));
+    }
+
+    record_persona_segment_in(root, transcript, persona, now)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PersonaTranscriptSegment {
+    pub persona: String,
+    pub transcript: String,
+}
+
+pub(crate) fn split_persona_segments(
+    transcript: &str,
+    initial_persona: &str,
+) -> Vec<PersonaTranscriptSegment> {
+    let mut segments = Vec::new();
+    let mut current_persona = initial_persona.to_string();
+    let mut current_lines: Vec<String> = Vec::new();
+
+    for line in transcript.lines() {
+        if let Some(next_persona) = persona_switch_from_line(line) {
+            push_persona_segment(&mut segments, &current_persona, &current_lines);
+            current_persona = next_persona;
+            current_lines.clear();
+            continue;
+        }
+        current_lines.push(line.to_string());
+    }
+    push_persona_segment(&mut segments, &current_persona, &current_lines);
+
+    if segments.is_empty() {
+        segments.push(PersonaTranscriptSegment {
+            persona: initial_persona.to_string(),
+            transcript: String::new(),
+        });
+    }
+    segments
+}
+
+fn push_persona_segment(
+    segments: &mut Vec<PersonaTranscriptSegment>,
+    persona: &str,
+    lines: &[String],
+) {
+    let transcript = lines.join("\n").trim().to_string();
+    if transcript.is_empty() {
+        return;
+    }
+    if let Some(last) = segments.last_mut() {
+        if last.persona == persona {
+            if !last.transcript.ends_with('\n') {
+                last.transcript.push('\n');
+            }
+            last.transcript.push_str(&transcript);
+            return;
+        }
+    }
+    segments.push(PersonaTranscriptSegment {
+        persona: persona.to_string(),
+        transcript,
+    });
+}
+
+fn persona_switch_from_line(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+    if let Some(rest) = trimmed.strip_prefix("/persona ") {
+        return first_persona_token(rest);
+    }
+
+    if let Some(rest) = trimmed
+        .strip_prefix("Learner: /persona ")
+        .or_else(|| trimmed.strip_prefix("User: /persona "))
+        .or_else(|| trimmed.strip_prefix("Operator: /persona "))
+    {
+        return first_persona_token(rest);
+    }
+
+    let (_, rest) = trimmed.split_once(':').unwrap_or(("", trimmed));
+    let rest = rest.trim();
+    let after = rest.strip_prefix(PERSONA_LOADED_PREFIX)?;
+    let (name, suffix) = after.split_once('\'')?;
+    if suffix.starts_with(PERSONA_LOADED_AFTER_NAME) {
+        first_persona_token(name)
+    } else {
+        None
+    }
+}
+
+fn first_persona_token(raw: &str) -> Option<String> {
+    raw.trim()
+        .split_whitespace()
+        .next()
+        .map(|s| s.trim_matches(|c: char| c == '"' || c == '\'' || c == '.'))
+        .filter(|s| !s.is_empty())
+        .map(ToString::to_string)
+}
+
+fn merge_segment_summaries(
+    summaries: Vec<SessionRecordSummary>,
+    fallback_persona: &str,
+) -> SessionRecordSummary {
+    let mut personas = Vec::new();
+    let mut vocabulary_count = 0;
+    let mut struggle_count = 0;
+    let mut sessions_count = 0;
+    let mut words = Vec::new();
+    let mut struggles = Vec::new();
+
+    for summary in summaries {
+        if !personas.contains(&summary.persona) {
+            personas.push(summary.persona.clone());
+        }
+        vocabulary_count += summary.vocabulary_count;
+        struggle_count += summary.struggle_count;
+        sessions_count = summary.sessions_count;
+        words.extend(summary.words);
+        struggles.extend(summary.struggles);
+    }
+
+    SessionRecordSummary {
+        persona: if personas.is_empty() {
+            fallback_persona.to_string()
+        } else {
+            personas.join(", ")
+        },
+        vocabulary_count,
+        struggle_count,
+        sessions_count,
+        words,
+        struggles,
+    }
+}
+
+fn record_persona_segment_in(
     root: &Path,
     transcript: &str,
     persona: &str,
@@ -1565,6 +1831,42 @@ mod tests {
     }
 
     #[test]
+    fn planner_prompt_uses_same_wiki_state_as_rule_brief() {
+        let tmp = TempDir::new().unwrap();
+        write(
+            &tmp.path().join(".dm/wiki/entities/Persona/Yuki.md"),
+            &yuki_md(1),
+        );
+        write(
+            &tmp.path().join(".dm/wiki/entities/Vocabulary/猫.md"),
+            &vocab_md("猫", "ねこ", "cat", "Introduced"),
+        );
+        write(
+            &tmp.path()
+                .join(".dm/wiki/synthesis/struggles-2026-04-27.md"),
+            "---\ntitle: Struggles 2026-04-27\n---\n\n- **te-form** — used masu-stem instead\n",
+        );
+
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 4, 27).unwrap();
+        let state = collect_planner_wiki_state(tmp.path(), "Yuki", 3, today);
+        let prompt = build_planner_prompt(&state);
+        let brief = build_session_brief_from_state(&state);
+
+        assert!(prompt.contains("You are kotoba's pre-session planner."));
+        assert!(prompt.contains("- Date: 2026-04-27"));
+        assert!(prompt.contains("- Requested persona: Yuki"));
+        assert!(prompt.contains("Yuki (sessions_count: 1)"));
+        assert!(prompt.contains("Self-introduction; Café ordering; Weekend hobbies"));
+        assert!(prompt.contains("猫 (ねこ) — cat [mastery: Introduced]"));
+        assert!(prompt.contains("**te-form**"));
+
+        assert!(brief.contains("Yuki (session 2)"));
+        assert!(brief.contains("Café ordering"));
+        assert!(brief.contains("猫"));
+        assert!(brief.contains("te-form"));
+    }
+
+    #[test]
     fn parse_frontmatter_handles_missing_block() {
         let body = "# heading\n\nno frontmatter here\n";
         assert!(parse_frontmatter(body).is_empty());
@@ -1609,6 +1911,25 @@ Assistant: what is ignored because assistant is not the learner.
         assert_eq!(found.len(), 2);
         assert_eq!(found[0].topic, "は vs が");
         assert_eq!(found[1].topic, "て-form");
+    }
+
+    #[test]
+    fn split_persona_segments_recognizes_shared_loaded_marker() {
+        let transcript = format!(
+            "\
+Yuki: New word: 学校 (がっこう) means school.
+tool: {}Hiro'{}
+Hiro: New word: 猫 (ねこ) means cat.
+",
+            PERSONA_LOADED_PREFIX, PERSONA_LOADED_AFTER_NAME
+        );
+
+        let segments = split_persona_segments(&transcript, "Yuki");
+        assert_eq!(segments.len(), 2, "{segments:?}");
+        assert_eq!(segments[0].persona, "Yuki");
+        assert!(segments[0].transcript.contains("学校"));
+        assert_eq!(segments[1].persona, "Hiro");
+        assert!(segments[1].transcript.contains("猫"));
     }
 
     #[test]
