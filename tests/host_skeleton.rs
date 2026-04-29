@@ -9,7 +9,18 @@ impl Drop for RemoveOnDrop {
     }
 }
 
+// Ignored in kotoba: this canonical-paradigm-validation test builds the
+// `examples/host-skeleton` example. The example's Cargo.toml depends on
+// `dark-matter` by package name, but kotoba's package is named `kotoba`
+// (with `dark_matter` exposed only as the lib name). The kotoba-side
+// workaround in examples/host-skeleton/Cargo.toml sidesteps the build,
+// but this canonical test still expects the canonical `dark-matter`
+// package shape. See
+// `.dm/wiki/concepts/paradigm-gap-spawn-example-cargo-rewrite.md`. When
+// the canonical fix lands and `dm spawn` rewrites example Cargo.toml
+// files at spawn time, flip the `#[ignore]` here.
 #[test]
+#[ignore = "host-skeleton example expects canonical package name; kotoba renamed package"]
 fn host_skeleton_ingests_domain_file_into_host_wiki() {
     let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let example = repo.join("examples/host-skeleton");

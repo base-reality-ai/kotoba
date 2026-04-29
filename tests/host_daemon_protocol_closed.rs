@@ -69,7 +69,7 @@ fn wait_for_connectable_socket(path: &Path) {
 }
 
 #[test]
-fn daemon_rejects_host_tool_invocation_method() {
+fn daemon_dispatches_host_invoke_post_9259acb() {
     let bin = env!("CARGO_BIN_EXE_dm");
     let home = TempDir::new().expect("home tempdir");
     let project = TempDir::new().expect("project tempdir");
@@ -79,12 +79,13 @@ fn daemon_rejects_host_tool_invocation_method() {
     let socket = project.path().join(".dm/daemon.sock");
     wait_for_connectable_socket(&socket);
 
-    // Try to invoke a host capability through the daemon. There is no
-    // `host.invoke` (or `host.record_session`, or `tool.call`, or any
-    // other host extension hook) in the daemon's match arm — see
-    // `src/daemon/server.rs::handle_connection`, where the closed string
-    // match falls through to "unknown method: …" on anything not in the
-    // kernel's whitelist.
+    // Post-9259acb: invoke a host capability through the daemon. The
+    // `host.invoke` method now dispatches against the in-process tool
+    // registry, enforces the host_ prefix, and either returns
+    // HostInvokeResult on success or an error event with the tool's
+    // own message. With kotoba's KotobaCapabilities pre-installed,
+    // host_record_session resolves; we send minimal-but-valid args
+    // so the dispatch lands without exercising recorder logic.
     let stream = UnixStream::connect(&socket).expect("connect daemon");
     stream
         .set_read_timeout(Some(Duration::from_secs(2)))
@@ -108,24 +109,32 @@ fn daemon_rejects_host_tool_invocation_method() {
         serde_json::from_str(response_line.trim()).expect("parse response JSON");
     let event_type = parsed.get("type").and_then(|t| t.as_str()).unwrap_or("");
     let message = parsed.get("message").and_then(|m| m.as_str()).unwrap_or("");
-    assert_eq!(
-        event_type, "error",
-        "expected error event, got {}: {}",
-        event_type, response_line
-    );
 
+    // Post-9259acb: the daemon must NOT respond with "unknown method"
+    // for host.invoke. Either the call succeeds (dispatch + tool ran)
+    // or it fails for tool-specific reasons (missing args, host tool
+    // returned is_error). What we explicitly verify is that the
+    // dispatch primitive is wired — host.invoke is a known method.
     assert!(
-        message.contains("unknown method"),
-        "GAP: expected daemon to reject host.invoke as unknown method. \
-         Got response: {}. If this assert fails because the daemon \
-         dispatched the call, the canonical fix has landed — flip this \
-         test to assert successful dispatch and update the gap doc.",
+        !message.contains("unknown method"),
+        "post-9259acb: daemon must NOT reject host.invoke as unknown \
+         method. Got response: {}. The canonical fix wires the dispatch \
+         primitive — if this assert fires, it has regressed.",
         response_line
     );
+
+    // The response should be either a successful HostInvokeResult or
+    // an error that names host.invoke / host_record_session in its
+    // message. Both shapes confirm the daemon is now extension-aware.
+    let recognized = matches!(event_type, "host_invoke_result")
+        || (event_type == "error"
+            && (message.contains("host.invoke")
+                || message.contains("host_record_session")
+                || message.contains("host tool")));
     assert!(
-        message.contains("host.invoke"),
-        "GAP: error message should echo the rejected method name. \
-         Got response: {}.",
+        recognized,
+        "post-9259acb: expected HostInvokeResult or a host.invoke-shaped \
+         error event. Got: {}",
         response_line
     );
 }

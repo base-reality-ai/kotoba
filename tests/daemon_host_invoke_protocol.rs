@@ -104,9 +104,18 @@ fn daemon_recognizes_host_invoke_method() {
         message.contains("host.invoke"),
         "error must echo the method context: {response_line}"
     );
+    // Canonical dm has no host caps installed → "no host capabilities
+    // installed" message. Kotoba binary boots with KotobaCapabilities
+    // pre-installed → the dispatch finds host_record_session and only
+    // fails because args are empty. Either error path is correct: both
+    // confirm the primitive is wired and the daemon stopped rejecting
+    // host.invoke as an unknown method.
     assert!(
-        message.contains("no host capabilities installed"),
-        "canonical dm has no host caps installed; expected the dispatch \
-         primitive's NoHostInstalled message. got: {response_line}"
+        message.contains("no host capabilities installed")
+            || message.contains("host tool failed")
+            || message.contains("missing required"),
+        "expected either NoHostInstalled (canonical) or a tool-side \
+         dispatch error (host project with caps installed). \
+         got: {response_line}"
     );
 }

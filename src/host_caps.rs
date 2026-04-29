@@ -17,6 +17,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use dark_matter::host::HostCapabilities;
 use dark_matter::tools::{Tool, ToolResult};
+use dark_matter::wiki::{Layer, PageType, Wiki, WikiPage};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
@@ -233,25 +234,18 @@ fn log_vocabulary_in(root: &Path, input: VocabularyInput<'_>) -> Result<PathBuf>
         input.kanji
     });
 
-    let dir = root.join(".dm/wiki/entities/Vocabulary");
-    std::fs::create_dir_all(&dir)?;
-    let page_path = dir.join(format!("{}.md", slug));
-
-    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let title = if input.kanji.is_empty() {
         input.kana
     } else {
         input.kanji
     };
-    let mut frontmatter = format!(
-        "---\ntitle: {}\ntype: entity\nentity_kind: vocabulary\nlayer: host\nlast_updated: {}\n",
-        title, now
-    );
-    if let Some(level) = input.jlpt {
-        frontmatter.push_str(&format!("jlpt: {}\n", level));
-    }
-    frontmatter.push_str("---\n");
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
 
+    // Body markdown — same shape as the pre-canonical-9259acb raw write.
+    // JLPT level used to live in the frontmatter; WikiPage's structured
+    // fields don't have a slot for it, so it moves into the body where
+    // it remains discoverable by wiki_search and renders the same to
+    // a human reader.
     let mut body = String::new();
     body.push_str(&format!("# {}\n\n", title));
     if !input.kanji.is_empty() {
@@ -263,6 +257,9 @@ fn log_vocabulary_in(root: &Path, input: VocabularyInput<'_>) -> Result<PathBuf>
     }
     body.push_str(&format!("- **Meaning:** {}\n", input.meaning));
     body.push_str(&format!("- **Part of speech:** {}\n", input.pos));
+    if let Some(level) = input.jlpt {
+        body.push_str(&format!("- **JLPT:** N{}\n", level));
+    }
     body.push_str(&format!("- **Mastery:** {:?}\n\n", Mastery::Introduced));
 
     if let (Some(jp), Some(en)) = (input.example_japanese, input.example_english) {
@@ -270,8 +267,28 @@ fn log_vocabulary_in(root: &Path, input: VocabularyInput<'_>) -> Result<PathBuf>
         body.push_str(&format!("- {}\n  - _{}_\n", jp, en));
     }
 
-    std::fs::write(&page_path, format!("{}{}", frontmatter, body))?;
-    Ok(page_path)
+    let page = WikiPage {
+        title: title.to_string(),
+        page_type: PageType::Entity,
+        layer: Layer::Host,
+        sources: vec![],
+        last_updated: now,
+        entity_kind: None,
+        purpose: None,
+        key_exports: vec![],
+        dependencies: vec![],
+        outcome: None,
+        scope: vec![],
+        body,
+    };
+
+    let one_liner = format!("{} ({}) — {}", title, input.kana, input.meaning);
+    let relative_path = format!("entities/Vocabulary/{}.md", slug);
+
+    let wiki = Wiki::open(root)?;
+    wiki.register_host_page(&relative_path, &page, &one_liner)?;
+
+    Ok(root.join(".dm/wiki").join(&relative_path))
 }
 
 // ---------------------------------------------------------------------------
@@ -350,36 +367,53 @@ impl Tool for LogKanjiTool {
         let mnemonic = args.get("mnemonic").and_then(|v| v.as_str());
 
         let root = project_root();
-        let dir = root.join(".dm/wiki/entities/Kanji");
-        std::fs::create_dir_all(&dir)?;
-        let page_path = dir.join(format!("{}.md", slugify(character)));
-
         let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-        let mut content = format!(
-            "---\ntitle: {}\ntype: entity\nentity_kind: kanji\nlayer: host\nlast_updated: {}\n",
-            character, now
-        );
-        if let Some(level) = jlpt {
-            content.push_str(&format!("jlpt: {}\n", level));
-        }
-        content.push_str("---\n\n");
-        content.push_str(&format!("# {}\n\n", character));
-        content.push_str(&format!("- **Meaning:** {}\n", meaning));
+
+        // Body markdown — same shape as the pre-9259acb raw write.
+        // JLPT was previously a frontmatter line; WikiPage's structured
+        // fields don't carry it, so it moves into the body where
+        // wiki_search still finds it.
+        let mut body = String::new();
+        body.push_str(&format!("# {}\n\n", character));
+        body.push_str(&format!("- **Meaning:** {}\n", meaning));
         if !onyomi.is_empty() {
-            content.push_str(&format!("- **On'yomi:** {}\n", onyomi.join(", ")));
+            body.push_str(&format!("- **On'yomi:** {}\n", onyomi.join(", ")));
         }
         if !kunyomi.is_empty() {
-            content.push_str(&format!("- **Kun'yomi:** {}\n", kunyomi.join(", ")));
+            body.push_str(&format!("- **Kun'yomi:** {}\n", kunyomi.join(", ")));
         }
         if !radicals.is_empty() {
-            content.push_str(&format!("- **Radicals:** {}\n", radicals.join(" + ")));
+            body.push_str(&format!("- **Radicals:** {}\n", radicals.join(" + ")));
         }
-        content.push_str(&format!("- **Mastery:** {:?}\n", Mastery::Introduced));
+        if let Some(level) = jlpt {
+            body.push_str(&format!("- **JLPT:** N{}\n", level));
+        }
+        body.push_str(&format!("- **Mastery:** {:?}\n", Mastery::Introduced));
         if let Some(m) = mnemonic {
-            content.push_str(&format!("\n## Mnemonic\n\n{}\n", m));
+            body.push_str(&format!("\n## Mnemonic\n\n{}\n", m));
         }
 
-        std::fs::write(&page_path, content)?;
+        let page = WikiPage {
+            title: character.to_string(),
+            page_type: PageType::Entity,
+            layer: Layer::Host,
+            sources: vec![],
+            last_updated: now,
+            entity_kind: None,
+            purpose: None,
+            key_exports: vec![],
+            dependencies: vec![],
+            outcome: None,
+            scope: vec![],
+            body,
+        };
+
+        let one_liner = format!("{} — {}", character, meaning);
+        let relative_path = format!("entities/Kanji/{}.md", slugify(character));
+        let page_path = root.join(".dm/wiki").join(&relative_path);
+
+        let wiki = Wiki::open(&root)?;
+        wiki.register_host_page(&relative_path, &page, &one_liner)?;
 
         Ok(ToolResult {
             content: format!(

@@ -8,5 +8,9 @@ publish = false
 tokio = { version = "1", features = ["full"] }
 anyhow = "1"
 async-trait = "0.1"
-dark-matter = { path = "../.." }
+# Workaround for paradigm-gap-spawn-example-cargo-rewrite: dm spawn doesn't
+# rewrite this dependency when the host package is renamed. The kotoba
+# package exposes `dark_matter` as its lib name, so we depend on the kotoba
+# package by path and import via `dark_matter::*` as before.
+dark_matter = { path = "../..", package = "kotoba" }
 serde_json = "1"
