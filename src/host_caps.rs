@@ -15,7 +15,11 @@
 
 use anyhow::Result;
 use async_trait::async_trait;
+use dark_matter::config;
+use dark_matter::conversation;
 use dark_matter::host::HostCapabilities;
+use dark_matter::ollama::client::OllamaClient;
+use dark_matter::tools::registry;
 use dark_matter::tools::{Tool, ToolResult};
 use dark_matter::wiki::{Layer, PageType, Wiki, WikiPage};
 use serde_json::{json, Value};
@@ -75,6 +79,14 @@ impl Tool for InvokePersonaTool {
 
     fn description(&self) -> &'static str {
         "Switch the active conversational persona for the next turn. Reads the persona's wiki entity (e.g. Yuki) and returns its system-prompt-shaped frontmatter + body so the next chain node speaks in that voice."
+    }
+
+    fn system_prompt_hint(&self) -> Option<&'static str> {
+        Some(
+            "Use host_invoke_persona to switch the conversational voice mid-session \
+             (e.g. operator types `/persona Hiro`). The tool returns the persona's \
+             wiki entity body which becomes the next turn's persona context.",
+        )
     }
 
     fn parameters(&self) -> Value {
@@ -145,6 +157,16 @@ impl Tool for LogVocabularyTool {
 
     fn description(&self) -> &'static str {
         "Record a Japanese vocabulary word in the wiki (host-layer). Use whenever a new word is introduced in a session, or when an existing word's example/mastery should be updated."
+    }
+
+    fn system_prompt_hint(&self) -> Option<&'static str> {
+        Some(
+            "Use host_log_vocabulary the moment you introduce a new Japanese word \
+             to the learner, or when revisiting an old one. Always pass at least \
+             `kana` and `meaning`; add `kanji`, `romaji`, `pos`, `jlpt`, and an \
+             example sentence when known. The wiki upserts on slug, so re-logging \
+             the same word does not duplicate — it refreshes mastery context.",
+        )
     }
 
     fn parameters(&self) -> Value {
@@ -310,6 +332,15 @@ impl Tool for LogKanjiTool {
         "Record a kanji character in the wiki (host-layer) with its readings, radicals, and meaning. Use whenever a new kanji is introduced in conversation or when adding a memorable mnemonic."
     }
 
+    fn system_prompt_hint(&self) -> Option<&'static str> {
+        Some(
+            "Use host_log_kanji whenever you introduce a kanji character or attach \
+             a mnemonic. Pass on'yomi/kun'yomi readings, radicals, and JLPT level \
+             when known. Mnemonics dramatically improve retention — include one \
+             whenever you can think of a memorable visual story.",
+        )
+    }
+
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
@@ -450,6 +481,15 @@ impl Tool for RecordStruggleTool {
         "Flag a topic the learner stumbled on — confusion between similar words, mis-conjugation, particle confusion, etc. The planner agent uses these to prioritize what to review in the next session."
     }
 
+    fn system_prompt_hint(&self) -> Option<&'static str> {
+        Some(
+            "Use host_record_struggle the moment a learner shows clear confusion: \
+             mis-conjugating a verb, picking the wrong particle, mixing similar \
+             words. Be concrete in `what_got_confused` (\"used wa instead of ga\") \
+             — the next session's planner uses these strings to weight review.",
+        )
+    }
+
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
@@ -496,29 +536,39 @@ fn record_struggle_in(
     what: &str,
     now: chrono::DateTime<chrono::Utc>,
 ) -> Result<PathBuf> {
-    let dir = root.join(".dm/wiki/synthesis");
-    std::fs::create_dir_all(&dir)?;
-
     let date = now.format("%Y-%m-%d").to_string();
-    let page_path = dir.join(format!("struggles-{}.md", date));
-
     let timestamp = now.format("%Y-%m-%d %H:%M:%S").to_string();
     let entry = format!("- **{}** — {} _(logged {})_\n", topic, what, timestamp);
 
-    if page_path.exists() {
-        // Append to today's existing struggles page.
-        let existing = std::fs::read_to_string(&page_path)?;
-        let updated = format!("{}{}", existing, entry);
-        std::fs::write(&page_path, updated)?;
-    } else {
-        let content = format!(
-            "---\ntitle: Struggles {}\ntype: synthesis\nlayer: host\nlast_updated: {}\n---\n\n# Struggles for {}\n\n{}",
-            date, timestamp, date, entry
-        );
-        std::fs::write(&page_path, content)?;
-    }
+    let relative_path = format!("synthesis/struggles-{}.md", date);
+    let wiki = Wiki::open(root)?;
 
-    Ok(page_path)
+    let mut page = match wiki.read_page(&relative_path) {
+        Ok(existing) => existing,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => WikiPage {
+            title: format!("Struggles {}", date),
+            page_type: PageType::Synthesis,
+            layer: Layer::Host,
+            sources: vec![],
+            last_updated: timestamp.clone(),
+            entity_kind: None,
+            purpose: None,
+            key_exports: vec![],
+            dependencies: vec![],
+            outcome: None,
+            scope: vec![],
+            body: format!("# Struggles for {}\n\n", date),
+        },
+        Err(e) => return Err(e.into()),
+    };
+
+    page.body.push_str(&entry);
+    page.last_updated = timestamp;
+
+    let one_liner = format!("Struggles for {}", date);
+    wiki.register_host_page(&relative_path, &page, &one_liner)?;
+
+    Ok(root.join(".dm/wiki").join(&relative_path))
 }
 
 // ---------------------------------------------------------------------------
@@ -538,6 +588,15 @@ impl Tool for QuizMeTool {
 
     fn description(&self) -> &'static str {
         "Pull vocabulary entries from the wiki for review. Returns up to `count` entries, prioritizing words at lower mastery levels (Introduced → Recognized → Recalled)."
+    }
+
+    fn system_prompt_hint(&self) -> Option<&'static str> {
+        Some(
+            "Use host_quiz_me when the learner asks to review or you detect they \
+             want a drill. Don't dump the raw output — work the words back into \
+             the conversation as natural prompts (\"what's the word for 'school' \
+             again?\") rather than reading them aloud as a flashcard list.",
+        )
     }
 
     fn parameters(&self) -> Value {
@@ -614,6 +673,58 @@ impl Tool for QuizMeTool {
 }
 
 // ---------------------------------------------------------------------------
+// build_persona_system_prompt
+// ---------------------------------------------------------------------------
+
+/// Marker text injected into the persona system prompt to make wiki recall
+/// explicit. Tests pin against this to assert the recall-guidance section
+/// is present; if it changes, both halves move together.
+#[allow(dead_code)]
+pub(crate) const PERSONA_RECALL_GUIDANCE_MARKER: &str = "## Wiki recall (the second brain)";
+
+/// Compose the persona system prompt that kotoba hands to the dm session via
+/// `--system`.
+///
+/// dm itself appends a `<tool_usage>` block listing every registered tool's
+/// hint (including `wiki_search` / `wiki_lookup`) — see canonical
+/// `tools::registry::system_prompt_hints_for`. That covers tool *availability*
+/// for the model. This helper covers tool *usage policy* the persona is
+/// expected to follow: the persona must call `wiki_search` BEFORE answering
+/// questions about previously encountered material, so the second brain
+/// actually compounds across sessions.
+///
+/// Without this, models often introduce a word fresh even though the learner
+/// already saw it last session — the kernel-side `<tool_usage>` block tells
+/// them the tool exists, but not when to reach for it.
+#[allow(dead_code)]
+pub fn build_persona_system_prompt(persona: &str, persona_body: &str, brief: &str) -> String {
+    let mut out = String::with_capacity(persona_body.len() + brief.len() + 512);
+    out.push_str(&format!(
+        "You are the Japanese-learning persona '{}'. The persona's wiki entity follows.\n\n",
+        persona
+    ));
+    out.push_str(persona_body);
+    if !persona_body.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push('\n');
+    out.push_str(PERSONA_RECALL_GUIDANCE_MARKER);
+    out.push_str(
+        "\n\nThe wiki at `.dm/wiki/` accumulates every word, kanji, struggle, \
+         and prior session this learner has encountered. Before answering a \
+         question about a word, kanji, grammar point, or topic the learner \
+         mentions, call `wiki_search` (or `wiki_lookup` for a known page \
+         path) and ground your reply in the prior entry. If the search \
+         returns nothing, treat the material as fresh and log it via \
+         `host_log_vocabulary` / `host_log_kanji` so the next session sees \
+         it. Recall first, introduce only when truly new.\n\n",
+    );
+    out.push_str("--- Planner brief for this session ---\n\n");
+    out.push_str(brief);
+    out
+}
+
+// ---------------------------------------------------------------------------
 // host_plan_session
 // ---------------------------------------------------------------------------
 
@@ -635,6 +746,15 @@ impl Tool for PlanSessionTool {
 
     fn description(&self) -> &'static str {
         "Pre-session planner. Reads the wiki (vocabulary mastery, recent struggles, the active persona's lore) and returns a structured markdown brief: today's focus topic, 3-5 words to surface for review, 1-2 grammar points to revisit, and one conversational hook the persona can open with. Call this before launching a learning session; pass the result into the persona's system prompt."
+    }
+
+    fn system_prompt_hint(&self) -> Option<&'static str> {
+        Some(
+            "Use host_plan_session at the start of a learning session before the \
+             persona opens. Pass the active `persona` and an optional \
+             `recent_struggle_days` window. The returned brief is meant to be \
+             quoted into the persona's opening turn — don't paraphrase it away.",
+        )
     }
 
     fn parameters(&self) -> Value {
@@ -668,7 +788,10 @@ impl Tool for PlanSessionTool {
 
         let root = project_root();
         let today = chrono::Utc::now().date_naive();
-        let brief = plan_session_in(&root, &persona, recent_days, today);
+        let planner_model = planner_model_from_env();
+        let brief =
+            plan_session_in_with_optional_llm(&root, &persona, recent_days, today, &planner_model)
+                .await?;
 
         Ok(ToolResult {
             content: brief,
@@ -795,9 +918,9 @@ pub(crate) fn read_persona_summary(root: &std::path::Path, name: &str) -> Option
         .join(format!("{}.md", slugify(name)));
     let body = std::fs::read_to_string(&path).ok()?;
     let fm = parse_frontmatter(&body);
-    let sessions_count = fm
-        .get("sessions_count")
-        .and_then(|v| v.parse::<u32>().ok())
+    let page_body = markdown_body_without_frontmatter(&body);
+    let sessions_count = parse_persona_sessions_count(page_body)
+        .or_else(|| fm.get("sessions_count").and_then(|v| v.parse::<u32>().ok()))
         .unwrap_or(0);
     // Pull bullet items under "## Signature topics" until next `##` heading.
     let mut topics = Vec::new();
@@ -1060,6 +1183,64 @@ pub(crate) fn build_planner_prompt(state: &PlannerWikiState) -> String {
     s
 }
 
+fn env_flag_enabled(key: &str) -> bool {
+    matches!(
+        std::env::var(key).as_deref(),
+        Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES")
+    )
+}
+
+fn planner_model_from_env() -> String {
+    std::env::var("KOTOBA_PLANNER_MODEL").unwrap_or_else(|_| "claude-opus".to_string())
+}
+
+fn recorder_model_from_env() -> String {
+    std::env::var("KOTOBA_RECORDER_MODEL").unwrap_or_else(|_| "claude-opus".to_string())
+}
+
+fn ollama_base_url() -> String {
+    if let Ok(raw) = std::env::var("OLLAMA_HOST") {
+        return format!("http://{}/api", config::normalize_host(&raw));
+    }
+    config::Config::load()
+        .map(|cfg| cfg.ollama_base_url())
+        .unwrap_or_else(|_| "http://localhost:11434/api".to_string())
+}
+
+pub(crate) async fn plan_session_in_with_optional_llm(
+    root: &std::path::Path,
+    persona_name: &str,
+    recent_days: i64,
+    today: chrono::NaiveDate,
+    planner_model: &str,
+) -> Result<String> {
+    let state = collect_planner_wiki_state(root, persona_name, recent_days, today);
+    if !env_flag_enabled("KOTOBA_PLANNER_USE_LLM") {
+        return Ok(build_session_brief_from_state(&state));
+    }
+
+    let prompt = build_planner_prompt(&state);
+    let config_dir = root.join(".dm");
+    std::fs::create_dir_all(&config_dir)?;
+    let client = OllamaClient::new(ollama_base_url(), planner_model.to_string());
+    let registry = registry::default_registry(
+        "kotoba-planner",
+        &config_dir,
+        client.base_url(),
+        client.model(),
+        "",
+    );
+    let capture = conversation::run_conversation_capture_in_config_dir(
+        &prompt,
+        "kotoba-planner",
+        &client,
+        &registry,
+        &config_dir,
+    )
+    .await?;
+    Ok(capture.text)
+}
+
 pub(crate) fn build_session_brief_from_state(state: &PlannerWikiState) -> String {
     build_session_brief(
         state.persona.as_ref(),
@@ -1072,6 +1253,7 @@ pub(crate) fn build_session_brief_from_state(state: &PlannerWikiState) -> String
 /// Pure top-level entry point used both by [`PlanSessionTool::call`] and by
 /// unit tests. Wikiless invocations and partial-wiki invocations both yield
 /// a sensible brief — never an error.
+#[allow(dead_code)]
 pub(crate) fn plan_session_in(
     root: &std::path::Path,
     persona_name: &str,
@@ -1099,6 +1281,15 @@ impl Tool for RecordSessionTool {
 
     fn description(&self) -> &'static str {
         "Post-session recorder. Given a transcript and persona name, records newly introduced Japanese vocabulary, flags learner struggles, appends a session log entry to the persona page, and increments that persona's sessions_count."
+    }
+
+    fn system_prompt_hint(&self) -> Option<&'static str> {
+        Some(
+            "Use host_record_session AFTER a session ends, with the full \
+             transcript and the active persona. It bulk-extracts vocab and \
+             struggles and bumps the persona's session counter. Run it once per \
+             session; running mid-session double-counts.",
+        )
     }
 
     fn parameters(&self) -> Value {
@@ -1131,7 +1322,10 @@ impl Tool for RecordSessionTool {
 
         let root = project_root();
         let now = chrono::Utc::now();
-        let summary = record_session_in(&root, transcript, persona, now)?;
+        let recorder_model = recorder_model_from_env();
+        let summary =
+            record_session_in_with_optional_llm(&root, transcript, persona, now, &recorder_model)
+                .await?;
 
         Ok(ToolResult {
             content: summary.to_markdown(),
@@ -1209,6 +1403,57 @@ pub(crate) fn record_session_in(
     }
 
     record_persona_segment_in(root, transcript, persona, now)
+}
+
+pub(crate) async fn record_session_in_with_optional_llm(
+    root: &Path,
+    transcript: &str,
+    persona: &str,
+    now: chrono::DateTime<chrono::Utc>,
+    recorder_model: &str,
+) -> Result<SessionRecordSummary> {
+    if !env_flag_enabled("KOTOBA_RECORDER_USE_LLM") {
+        return record_session_in(root, transcript, persona, now);
+    }
+
+    let prompt = build_recorder_prompt(transcript, persona);
+    let config_dir = root.join(".dm");
+    std::fs::create_dir_all(&config_dir)?;
+    let client = OllamaClient::new(ollama_base_url(), recorder_model.to_string());
+    let registry = registry::default_registry(
+        "kotoba-recorder",
+        &config_dir,
+        client.base_url(),
+        client.model(),
+        "",
+    );
+    let capture = conversation::run_conversation_capture_in_config_dir(
+        &prompt,
+        "kotoba-recorder",
+        &client,
+        &registry,
+        &config_dir,
+    )
+    .await?;
+
+    record_session_in(root, &capture.text, persona, now)
+}
+
+#[allow(dead_code)]
+pub(crate) fn build_recorder_prompt(transcript: &str, persona: &str) -> String {
+    format!(
+        "You are kotoba's post-session recorder.\n\
+         Convert the transcript into concise evidence lines that kotoba's \
+         rule-based recorder can ingest.\n\n\
+         Output only lines in these forms when supported by the transcript:\n\
+         - Recorder: New word: <Japanese> (<kana>) means <English gloss>.\n\
+         - Learner: I don't know <topic>.\n\n\
+         Use the active persona name only as context; do not invent vocabulary, \
+         readings, meanings, or struggles. If nothing should be recorded, \
+         output exactly: Recorder: nothing to record.\n\n\
+         Active persona: {persona}\n\n\
+         Transcript:\n{transcript}\n"
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1468,37 +1713,39 @@ fn append_persona_session_entry(
     struggles: &[DetectedStruggle],
     now: chrono::DateTime<chrono::Utc>,
 ) -> Result<u32> {
-    let dir = root.join(".dm/wiki/entities/Persona");
-    std::fs::create_dir_all(&dir)?;
-    let path = dir.join(format!("{}.md", slugify(persona)));
-    let existing = if path.exists() {
-        std::fs::read_to_string(&path)?
-    } else {
-        format!(
-            "---\ntitle: {}\ntype: entity\nentity_kind: persona\nlayer: host\nsessions_count: 0\n---\n\n# {}\n\n## Sessions log\n\n",
-            persona, persona
-        )
+    let timestamp = now.format("%Y-%m-%d %H:%M:%S").to_string();
+    let relative_path = format!("entities/Persona/{}.md", slugify(persona));
+    let page_path = root.join(".dm/wiki").join(&relative_path);
+    let raw_existing = std::fs::read_to_string(&page_path).ok();
+    let wiki = Wiki::open(root)?;
+
+    let mut page = match wiki.read_page(&relative_path) {
+        Ok(existing) => existing,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => new_persona_page(persona, &timestamp),
+        Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
+            let raw = raw_existing.as_deref().ok_or(e)?;
+            legacy_persona_page_from_raw(persona, raw, &timestamp)
+        }
+        Err(e) => return Err(e.into()),
     };
 
-    let current_count = parse_frontmatter(&existing)
-        .get("sessions_count")
-        .and_then(|v| v.parse::<u32>().ok())
+    let current_count = parse_persona_sessions_count(&page.body)
+        .or_else(|| {
+            raw_existing
+                .as_deref()
+                .and_then(|raw| parse_frontmatter(raw).get("sessions_count").cloned())
+                .and_then(|v| v.parse::<u32>().ok())
+        })
         .unwrap_or(0);
     let next_count = current_count + 1;
-    let mut updated = set_frontmatter_value(&existing, "sessions_count", &next_count.to_string());
-    updated = set_frontmatter_value(
-        &updated,
-        "last_updated",
-        &now.format("%Y-%m-%d").to_string(),
-    );
 
+    let mut updated = set_body_sessions_count(&page.body, next_count);
     if !updated.contains("## Sessions log") {
         updated.push_str("\n## Sessions log\n\n");
     }
     if !updated.ends_with('\n') {
         updated.push('\n');
     }
-    let timestamp = now.format("%Y-%m-%d %H:%M:%S");
     let topics = infer_topics(vocab, struggles);
     let words = if vocab.is_empty() {
         "none".to_string()
@@ -1528,42 +1775,104 @@ fn append_persona_session_entry(
         "\n- **{}** — Topics: {}; words introduced: {}; struggles flagged: {}.\n",
         timestamp, topics, words, flagged
     ));
-    std::fs::write(path, updated)?;
+    page.body = updated;
+    page.last_updated = timestamp;
+    page.page_type = PageType::Entity;
+    page.layer = Layer::Host;
+
+    let one_liner = format!("{} persona — {} recorded session(s)", persona, next_count);
+    wiki.register_host_page(&relative_path, &page, &one_liner)?;
     Ok(next_count)
 }
 
-fn set_frontmatter_value(body: &str, key: &str, value: &str) -> String {
+fn new_persona_page(persona: &str, last_updated: &str) -> WikiPage {
+    WikiPage {
+        title: persona.to_string(),
+        page_type: PageType::Entity,
+        layer: Layer::Host,
+        sources: vec![],
+        last_updated: last_updated.to_string(),
+        entity_kind: None,
+        purpose: None,
+        key_exports: vec![],
+        dependencies: vec![],
+        outcome: None,
+        scope: vec![],
+        body: format!("# {}\n\n- **Sessions:** 0\n\n## Sessions log\n\n", persona),
+    }
+}
+
+fn legacy_persona_page_from_raw(persona: &str, raw: &str, last_updated: &str) -> WikiPage {
+    let fm = parse_frontmatter(raw);
+    let title = fm
+        .get("title")
+        .cloned()
+        .unwrap_or_else(|| persona.to_string());
+    let last_updated = fm
+        .get("last_updated")
+        .cloned()
+        .unwrap_or_else(|| last_updated.to_string());
+    WikiPage {
+        title,
+        page_type: PageType::Entity,
+        layer: Layer::Host,
+        sources: vec![],
+        last_updated,
+        entity_kind: None,
+        purpose: None,
+        key_exports: vec![],
+        dependencies: vec![],
+        outcome: None,
+        scope: vec![],
+        body: markdown_body_without_frontmatter(raw).to_string(),
+    }
+}
+
+fn markdown_body_without_frontmatter(markdown: &str) -> &str {
+    let Some(rest) = markdown.strip_prefix("---\n") else {
+        return markdown;
+    };
+    let Some(end) = rest.find("\n---\n") else {
+        return markdown;
+    };
+    &rest[end + "\n---\n".len()..]
+}
+
+fn parse_persona_sessions_count(body: &str) -> Option<u32> {
+    body.lines().find_map(|line| {
+        let trimmed = line.trim();
+        let rest = trimmed
+            .strip_prefix("- **Sessions:**")
+            .or_else(|| trimmed.strip_prefix("**Sessions:**"))?;
+        rest.trim().parse::<u32>().ok()
+    })
+}
+
+fn set_body_sessions_count(body: &str, count: u32) -> String {
+    let replacement = format!("- **Sessions:** {}", count);
     let mut lines: Vec<String> = body.lines().map(ToString::to_string).collect();
-    if lines.first().map(|l| l.trim()) != Some("---") {
-        let mut out = format!("---\n{}: {}\n---\n\n", key, value);
-        out.push_str(body);
-        return out;
-    }
-
-    let mut end_idx = None;
-    let mut key_idx = None;
-    for (idx, line) in lines.iter().enumerate().skip(1) {
-        if line.trim() == "---" {
-            end_idx = Some(idx);
-            break;
-        }
-        if line
-            .split_once(':')
-            .map(|(k, _)| k.trim() == key)
-            .unwrap_or(false)
-        {
-            key_idx = Some(idx);
+    for line in &mut lines {
+        let trimmed = line.trim();
+        if trimmed.starts_with("- **Sessions:**") || trimmed.starts_with("**Sessions:**") {
+            *line = replacement;
+            let mut out = lines.join("\n");
+            if body.ends_with('\n') {
+                out.push('\n');
+            }
+            return out;
         }
     }
 
-    match (key_idx, end_idx) {
-        (Some(idx), _) => lines[idx] = format!("{}: {}", key, value),
-        (None, Some(idx)) => lines.insert(idx, format!("{}: {}", key, value)),
-        (None, None) => lines.insert(1, format!("{}: {}", key, value)),
-    }
+    let insert_at = lines
+        .iter()
+        .position(|line| line.trim_start().starts_with("# "))
+        .map(|idx| idx + 1)
+        .unwrap_or(0);
+    lines.insert(insert_at, String::new());
+    lines.insert(insert_at + 1, replacement);
     let mut out = lines.join("\n");
-    if body.ends_with('\n') {
-        out.push('\n');
+    if !out.ends_with("\n\n") {
+        out.push_str("\n\n");
     }
     out
 }
@@ -1948,6 +2257,18 @@ Assistant: what is ignored because assistant is not the learner.
     }
 
     #[test]
+    fn read_persona_summary_prefers_body_sessions_count() {
+        let tmp = TempDir::new().unwrap();
+        write(
+            &tmp.path().join(".dm/wiki/entities/Persona/Yuki.md"),
+            "---\ntitle: Yuki\ntype: entity\nlayer: host\nsessions_count: 1\nlast_updated: 2026-04-27\n---\n# Yuki\n\n- **Sessions:** 4\n\n## Signature topics\n\n- Café ordering\n",
+        );
+
+        let summary = read_persona_summary(tmp.path(), "Yuki").unwrap();
+        assert_eq!(summary.sessions_count, 4);
+    }
+
+    #[test]
     fn split_persona_segments_recognizes_shared_loaded_marker() {
         let transcript = format!(
             "\
@@ -2009,7 +2330,8 @@ User: what is て-form?
 
         let persona =
             std::fs::read_to_string(tmp.path().join(".dm/wiki/entities/Persona/Yuki.md")).unwrap();
-        assert!(persona.contains("sessions_count: 1"));
+        assert!(persona.contains("- **Sessions:** 1"));
+        assert!(!persona.contains("sessions_count: 1"));
         assert!(persona.contains("2026-04-27 12:30:00"));
         assert!(persona.contains("words introduced: 猫 / ねこ (cat), 学校 / がっこう (school)"));
         assert!(persona.contains("struggles flagged: は vs が, て-form"));
@@ -2029,7 +2351,7 @@ User: what is て-form?
         let persona =
             std::fs::read_to_string(tmp.path().join(".dm/wiki/entities/Persona/Aki.md")).unwrap();
         assert!(persona.contains("title: Aki"));
-        assert!(persona.contains("sessions_count: 1"));
+        assert!(persona.contains("- **Sessions:** 1"));
         assert!(persona.contains("## Sessions log"));
     }
 }

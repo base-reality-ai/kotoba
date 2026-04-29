@@ -152,13 +152,13 @@ fn record_session_worker_runs_end_to_end_through_real_binary() {
         vocab_body
     );
 
-    // 3. Persona page bumped to sessions_count 1 with the struggle
+    // 3. Persona page bumped to session 1 with the struggle
     //    captured in the session log.
     let persona_body =
         std::fs::read_to_string(project.path().join(".dm/wiki/entities/Persona/Yuki.md"))
             .expect("read Yuki.md");
     assert!(
-        persona_body.contains("sessions_count: 1"),
+        persona_body.contains("- **Sessions:** 1"),
         "{}",
         persona_body
     );

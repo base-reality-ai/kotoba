@@ -85,9 +85,50 @@ async fn host_log_vocabulary_results_in_wiki_searchable_page() {
 
     // Search by kana — proves the body indexed multiple terms.
     let hits = wiki.search("がっこう").expect("wiki search by kana");
-    assert!(
-        !hits.is_empty(),
-        "wiki_search('がっこう') returned no hits"
+    assert!(!hits.is_empty(), "wiki_search('がっこう') returned no hits");
+
+    if let Some(prior) = prior_cwd {
+        std::env::set_current_dir(prior).expect("restore cwd");
+    }
+}
+
+#[tokio::test]
+async fn host_log_vocabulary_twice_upserts_index() {
+    // Logging the same word twice (e.g. mastery promotion) must not
+    // create a duplicate `IndexEntry`. `register_host_page` upserts by
+    // relative path; the two writes resolve to the same slug, so the
+    // index keeps exactly one entry.
+    let _cwd_guard = CWD_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let project = TempDir::new().expect("tempdir");
+    let prior_cwd = std::env::current_dir().ok();
+    std::env::set_current_dir(project.path()).expect("chdir project");
+
+    Wiki::open(project.path()).expect("open wiki");
+
+    let tool = host_caps::LogVocabularyTool;
+    let first_args = json!({
+        "kanji": "学校",
+        "kana": "がっこう",
+        "romaji": "gakkou",
+        "meaning": "school",
+        "pos": "noun",
+    });
+    tool.call(first_args.clone()).await.expect("first log");
+    tool.call(first_args).await.expect("second log");
+
+    let wiki = Wiki::open(project.path()).expect("re-open wiki");
+    let idx = wiki.load_index().expect("load index");
+    let vocab_hits: Vec<_> = idx
+        .entries
+        .iter()
+        .filter(|e| e.path.contains("学校"))
+        .collect();
+    assert_eq!(
+        vocab_hits.len(),
+        1,
+        "expected exactly 1 index entry for 学校 after two writes \
+         (upsert), got: {:?}",
+        vocab_hits.iter().map(|e| &e.path).collect::<Vec<_>>()
     );
 
     if let Some(prior) = prior_cwd {

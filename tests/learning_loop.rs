@@ -157,7 +157,7 @@ fn record_session_writes_three_vocab_one_struggle_page_and_bumps_persona() {
     // Persona page bumped + a sessions log entry was appended with the
     // exact timestamp + the topics the recorder inferred from struggles.
     let persona = std::fs::read_to_string(root.join(".dm/wiki/entities/Persona/Yuki.md")).unwrap();
-    assert!(persona.contains("sessions_count: 1"), "{}", persona);
+    assert!(persona.contains("- **Sessions:** 1"), "{}", persona);
     assert!(persona.contains("2026-04-27 12:30:00"), "{}", persona);
     assert!(
         persona.contains("words introduced: 学校 / がっこう (school)"),
@@ -241,7 +241,7 @@ fn record_session_creates_persona_when_none_seeded() {
     let hiro =
         std::fs::read_to_string(tmp.path().join(".dm/wiki/entities/Persona/Hiro.md")).unwrap();
     assert!(hiro.contains("title: Hiro"), "{}", hiro);
-    assert!(hiro.contains("sessions_count: 1"), "{}", hiro);
+    assert!(hiro.contains("- **Sessions:** 1"), "{}", hiro);
     assert!(hiro.contains("## Sessions log"), "{}", hiro);
 }
 
@@ -295,7 +295,7 @@ User: what is タメ口?
     assert_eq!(summary.struggle_count, 2, "summary: {:?}", summary);
 
     let yuki = std::fs::read_to_string(root.join(".dm/wiki/entities/Persona/Yuki.md")).unwrap();
-    assert!(yuki.contains("sessions_count: 1"), "{}", yuki);
+    assert!(yuki.contains("- **Sessions:** 1"), "{}", yuki);
     assert!(
         yuki.contains("words introduced: 学校 / がっこう (school)"),
         "{}",
@@ -305,7 +305,7 @@ User: what is タメ口?
     assert!(!yuki.contains("タメ口"), "{}", yuki);
 
     let hiro = std::fs::read_to_string(root.join(".dm/wiki/entities/Persona/Hiro.md")).unwrap();
-    assert!(hiro.contains("sessions_count: 1"), "{}", hiro);
+    assert!(hiro.contains("- **Sessions:** 1"), "{}", hiro);
     assert!(
         hiro.contains("words introduced: 猫 / ねこ (cat)"),
         "{}",

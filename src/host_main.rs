@@ -47,7 +47,7 @@ async fn main() -> anyhow::Result<()> {
         }
         Some("record-session") => {
             let opts = parse_record_session_args(&args[1..])?;
-            run_record_session_command(opts)
+            run_record_session_command(opts).await
         }
         Some("dm") => {
             // Forward remaining args to dm's CLI.
@@ -370,12 +370,14 @@ async fn run_session(opts: SessionOpts) -> anyhow::Result<()> {
 
     let model_config = KotobaModelConfig::load(&project_root);
     let today = Utc::now().date_naive();
-    let brief = host_caps::plan_session_in(
+    let brief = host_caps::plan_session_in_with_optional_llm(
         &project_root,
         &opts.persona,
         opts.recent_struggle_days,
         today,
-    );
+        &model_config.planner_model,
+    )
+    .await?;
 
     println!("{}", brief);
 
@@ -394,10 +396,8 @@ async fn run_session(opts: SessionOpts) -> anyhow::Result<()> {
             opts.persona
         )
     });
-    let system_prompt = format!(
-        "You are the Japanese-learning persona '{}'. The persona's wiki entity follows.\n\n{}\n\n--- Planner brief for this session ---\n\n{}",
-        opts.persona, persona_body, brief
-    );
+    let system_prompt =
+        host_caps::build_persona_system_prompt(&opts.persona, &persona_body, &brief);
 
     let baseline = Utc::now();
 
@@ -437,14 +437,22 @@ async fn run_session(opts: SessionOpts) -> anyhow::Result<()> {
         }
     };
 
-    let summary = record_loaded_session(&project_root, &session, &opts.persona, after)?;
+    let summary = record_loaded_session(
+        &project_root,
+        &session,
+        &opts.persona,
+        after,
+        &model_config.recorder_model,
+    )
+    .await?;
     print_summary_lines(&summary);
     Ok(())
 }
 
-fn run_record_session_command(opts: RecordSessionOpts) -> anyhow::Result<()> {
+async fn run_record_session_command(opts: RecordSessionOpts) -> anyhow::Result<()> {
     let project_root = std::env::current_dir().context("locate project root")?;
     let config_dir = dm_config_dir()?;
+    let model_config = KotobaModelConfig::load(&project_root);
     write_recorder_status(
         &config_dir,
         RecorderStatus::running(&opts.session_id, &opts.persona, "recording session"),
@@ -456,7 +464,10 @@ fn run_record_session_command(opts: RecordSessionOpts) -> anyhow::Result<()> {
         &opts.session_id,
         &opts.persona,
         Utc::now(),
-    ) {
+        &model_config.recorder_model,
+    )
+    .await
+    {
         Ok(summary) => {
             let message = format!(
                 "recorded {} vocab item(s), {} struggle(s), sessions_count={}",
@@ -534,29 +545,38 @@ fn latest_session_after(
         .find(|s| s.created_at >= baseline || s.updated_at >= baseline))
 }
 
-fn record_session_by_id(
+async fn record_session_by_id(
     project_root: &Path,
     config_dir: &Path,
     session_id: &str,
     persona: &str,
     now: DateTime<Utc>,
+    recorder_model: &str,
 ) -> anyhow::Result<host_caps::SessionRecordSummary> {
     let session = dark_matter::session::storage::load(config_dir, session_id)
         .with_context(|| format!("load session {}", session_id))?;
-    record_loaded_session(project_root, &session, persona, now)
+    record_loaded_session(project_root, &session, persona, now, recorder_model).await
 }
 
-fn record_loaded_session(
+async fn record_loaded_session(
     project_root: &Path,
     session: &Session,
     persona: &str,
     now: DateTime<Utc>,
+    recorder_model: &str,
 ) -> anyhow::Result<host_caps::SessionRecordSummary> {
     let transcript = format_transcript(session);
     if transcript.trim().is_empty() {
         anyhow::bail!("session {} has no transcript content", session.id);
     }
-    host_caps::record_session_in(project_root, &transcript, persona, now)
+    host_caps::record_session_in_with_optional_llm(
+        project_root,
+        &transcript,
+        persona,
+        now,
+        recorder_model,
+    )
+    .await
 }
 
 fn format_transcript(session: &Session) -> String {
@@ -1001,8 +1021,8 @@ recorder_model = "recorder-from-toml"
         assert!(recorder_status_path(tmp.path()).exists());
     }
 
-    #[test]
-    fn record_session_by_id_loads_saved_session_and_updates_wiki() {
+    #[tokio::test]
+    async fn record_session_by_id_loads_saved_session_and_updates_wiki() {
         let project = tempfile::TempDir::new().unwrap();
         let config_dir = project.path().join(".dm");
         let now = Utc::now();
@@ -1023,7 +1043,9 @@ recorder_model = "recorder-from-toml"
             "session-record-test",
             "Yuki",
             now,
+            "should-not-be-called",
         )
+        .await
         .unwrap();
 
         assert_eq!(summary.vocabulary_count, 1);
@@ -1036,7 +1058,7 @@ recorder_model = "recorder-from-toml"
         let persona =
             std::fs::read_to_string(project.path().join(".dm/wiki/entities/Persona/Yuki.md"))
                 .unwrap();
-        assert!(persona.contains("sessions_count: 1"), "{}", persona);
+        assert!(persona.contains("- **Sessions:** 1"), "{}", persona);
         assert!(persona.contains("て-form"), "{}", persona);
     }
 }

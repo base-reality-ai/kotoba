@@ -64,8 +64,11 @@ Local Ollama (the default) won't be Japanese-fluent. Recommended:
 - **Conversation persona →** `gemini-3.1-pro-preview` (strongest in Japanese)
 - **Planner / recorder →** `claude-opus`
 
-Configure these in `~/.dm/settings.json` or via dm's CLI flags. Wiring
-the chain orchestration around the conversation is v0.2.
+Configure kotoba role models with environment variables or `.dm/kotoba.toml`:
+`KOTOBA_PERSONA_MODEL`, `KOTOBA_PLANNER_MODEL`, and
+`KOTOBA_RECORDER_MODEL`. The planner and recorder are rule-based by default;
+set `KOTOBA_PLANNER_USE_LLM=1` or `KOTOBA_RECORDER_USE_LLM=1` to run that
+role through dm's current Ollama-compatible capture path.
 
 ## License
 

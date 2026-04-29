@@ -116,11 +116,12 @@ cargo build --release
 ## Backend models
 
 Kotoba reads role-specific model settings from environment variables
-first, then `.dm/kotoba.toml`, then built-in defaults. The v0.2
-planner and recorder are rule-based host capabilities, so their model
-values are loaded and documented for the v0.3 agent-driven versions;
-`KOTOBA_PERSONA_MODEL` is active now and is passed to the dm TUI as
-`--model` by `kotoba session`.
+first, then `.dm/kotoba.toml`, then built-in defaults. `KOTOBA_PERSONA_MODEL`
+is passed to the dm TUI as `--model` by `kotoba session`. The pre-session
+planner and post-session recorder are rule-based by default, but
+`KOTOBA_PLANNER_USE_LLM=1` and `KOTOBA_RECORDER_USE_LLM=1` opt into LLM
+passes using their role-specific models through dm's current
+Ollama-compatible conversation capture path.
 
 | Role | Env var | TOML key | Default |
 |---|---|---|---|
@@ -141,6 +142,8 @@ Environment variables override the TOML file for local experiments:
 
 ```bash
 KOTOBA_PERSONA_MODEL=gemini-3.1-pro-preview kotoba session
+KOTOBA_PLANNER_USE_LLM=1 KOTOBA_PLANNER_MODEL=planner-model kotoba session
+KOTOBA_RECORDER_USE_LLM=1 KOTOBA_RECORDER_MODEL=recorder-model kotoba session
 ```
 
 ## v0.1 scope
