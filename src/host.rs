@@ -88,7 +88,7 @@
 //! registry.extend_with_host(&MyHost).expect("host registration");
 //! ```
 
-use crate::tools::Tool;
+use crate::tools::{Tool, ToolResult};
 use std::sync::OnceLock;
 
 /// Contract a host project's crate implements to extend dm's tool registry.
@@ -179,3 +179,72 @@ impl std::fmt::Display for HostCapabilitiesAlreadyInstalled {
 }
 
 impl std::error::Error for HostCapabilitiesAlreadyInstalled {}
+
+/// Errors surfaced by [`invoke_tool`] before the tool itself runs.
+/// Tool-side errors (returned by [`Tool::call`]) are propagated as
+/// [`InvokeError::Tool`] so the caller can distinguish dispatch
+/// failures from in-tool failures.
+#[derive(Debug)]
+pub enum InvokeError {
+    /// `name` did not start with [`HOST_TOOL_PREFIX`]. Carries the
+    /// offending name so the caller can echo it in error messages.
+    MissingPrefix(String),
+    /// No host capabilities have been installed in this process via
+    /// [`install_host_capabilities`].
+    NoHostInstalled,
+    /// The installed host capabilities did not register a tool with
+    /// `name`.
+    UnknownTool(String),
+    /// The tool ran but returned an error from its `call(...)` future.
+    Tool(anyhow::Error),
+}
+
+impl std::fmt::Display for InvokeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            InvokeError::MissingPrefix(name) => write!(
+                f,
+                "host tool `{}` does not carry the `{}` prefix. Try: only host-namespaced tools are reachable.",
+                name, HOST_TOOL_PREFIX
+            ),
+            InvokeError::NoHostInstalled => write!(
+                f,
+                "no host capabilities installed in this process. Try: install a HostCapabilities impl at startup before invoking host tools."
+            ),
+            InvokeError::UnknownTool(name) => write!(
+                f,
+                "host tool `{}` not registered by the installed host capabilities. Try: confirm the host's `tools()` returns a tool whose `name()` matches.",
+                name
+            ),
+            InvokeError::Tool(e) => write!(f, "host tool failed: {}", e),
+        }
+    }
+}
+
+impl std::error::Error for InvokeError {}
+
+/// Resolve a host-namespaced tool against the installed
+/// [`HostCapabilities`] registry and dispatch it.
+///
+/// Enforces the [`HOST_TOOL_PREFIX`] guard, builds a one-shot view of
+/// the host's tools, finds the named tool, and awaits `Tool::call`.
+/// Used by the daemon's `host.invoke` RPC and by any other surface
+/// that needs deterministic host-tool dispatch without going through
+/// the model loop.
+///
+/// Returns [`InvokeError`] on every failure shape (missing prefix,
+/// no host installed, unknown tool, tool-side error). Successful
+/// invocations return the tool's [`ToolResult`] verbatim — `is_error`
+/// stays meaningful for tool-internal failures.
+pub async fn invoke_tool(name: &str, args: serde_json::Value) -> Result<ToolResult, InvokeError> {
+    if !name.starts_with(HOST_TOOL_PREFIX) {
+        return Err(InvokeError::MissingPrefix(name.to_string()));
+    }
+    let caps = installed_host_capabilities().ok_or(InvokeError::NoHostInstalled)?;
+    let tool = caps
+        .tools()
+        .into_iter()
+        .find(|t| t.name() == name)
+        .ok_or_else(|| InvokeError::UnknownTool(name.to_string()))?;
+    tool.call(args).await.map_err(InvokeError::Tool)
+}

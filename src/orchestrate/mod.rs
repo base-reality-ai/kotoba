@@ -57,21 +57,51 @@ pub fn set_chain(handle: JoinHandle<()>, workspace: PathBuf) {
     }
 }
 
-/// Persist the last-active chain workspace to `~/.dm/last_chain.json`.
+/// Persist the last-active chain workspace to
+/// `<config_dir>/last_chain.json`. Identity-aware: in host mode, the
+/// pointer lands at `<project>/.dm/last_chain.json` next to the rest of
+/// the project's chain workspace state; in kernel mode, `~/.dm/`
+/// (Run-31 routing).
+///
+/// IO failures push a warning rather than vanishing — the pointer is
+/// best-effort persistence, but a silent loss leaves `dm chain attach`
+/// unable to find its workspace with no diagnostic trail.
 pub fn save_last_chain_pointer(workspace: &Path) {
-    if let Some(home) = dirs::home_dir() {
-        let pointer = serde_json::json!({
-            "workspace": workspace.to_string_lossy(),
-            "started_at": chrono::Utc::now().to_rfc3339(),
-        });
-        let path = home.join(".dm").join("last_chain.json");
-        let _ = fs::write(&path, pointer.to_string());
+    let Some(config_dir) = crate::config::current_project_config_dir() else {
+        crate::warnings::push_warning(
+            "orchestrate: home directory unresolved, cannot persist last_chain pointer".to_string(),
+        );
+        return;
+    };
+    let path = config_dir.join("last_chain.json");
+    if let Some(parent) = path.parent() {
+        if let Err(e) = fs::create_dir_all(parent) {
+            crate::warnings::push_warning(format!(
+                "orchestrate: failed to create {} for last_chain pointer: {}",
+                parent.display(),
+                e
+            ));
+            return;
+        }
+    }
+    let pointer = serde_json::json!({
+        "workspace": workspace.to_string_lossy(),
+        "started_at": chrono::Utc::now().to_rfc3339(),
+    });
+    if let Err(e) = fs::write(&path, pointer.to_string()) {
+        crate::warnings::push_warning(format!(
+            "orchestrate: failed to write last_chain pointer at {}: {}",
+            path.display(),
+            e
+        ));
     }
 }
 
-/// Load the last-active chain workspace from `~/.dm/last_chain.json`.
+/// Load the last-active chain workspace from
+/// `<config_dir>/last_chain.json`. Identity-aware (mirrors
+/// `save_last_chain_pointer`).
 pub fn load_last_chain_pointer() -> Option<PathBuf> {
-    let path = dirs::home_dir()?.join(".dm").join("last_chain.json");
+    let path = crate::config::current_project_config_dir()?.join("last_chain.json");
     let data = fs::read_to_string(&path).ok()?;
     let json: serde_json::Value = serde_json::from_str(&data).ok()?;
     let ws = json["workspace"].as_str()?;
@@ -83,10 +113,12 @@ pub fn load_last_chain_pointer() -> Option<PathBuf> {
     }
 }
 
-/// Remove the last-active chain pointer.
+/// Remove the last-active chain pointer from `<config_dir>/last_chain.json`.
+/// Identity-aware (mirrors `save_last_chain_pointer`). Removal failures
+/// stay silent — a missing file is the success state.
 pub fn clear_last_chain_pointer() {
-    if let Some(home) = dirs::home_dir() {
-        let _ = fs::remove_file(home.join(".dm").join("last_chain.json"));
+    if let Some(config_dir) = crate::config::current_project_config_dir() {
+        let _ = fs::remove_file(config_dir.join("last_chain.json"));
     }
 }
 
@@ -164,8 +196,9 @@ pub fn chain_add_node(mut node: ChainNodeConfig) -> Result<()> {
         .ok()
         .and_then(|g| g.as_ref().cloned())
         .ok_or_else(|| anyhow::anyhow!("No chain is running"))?;
-    // Resolve model alias
-    let config_dir = dirs::home_dir().map(|h| h.join(".dm")).unwrap_or_default();
+    // Resolve model alias from the operator-global config dir (alias
+    // tables stay shared across host projects on the same machine).
+    let config_dir = crate::config::current_global_config_dir().unwrap_or_default();
     let aliases = crate::config::load_aliases(&config_dir);
     if let Some(resolved) = aliases.get(&node.model) {
         node.model.clone_from(resolved);
@@ -187,8 +220,9 @@ pub fn chain_model(node: &str, model: &str) -> Result<()> {
         .ok()
         .and_then(|g| g.as_ref().cloned())
         .ok_or_else(|| anyhow::anyhow!("No chain is running"))?;
-    // Resolve model alias
-    let config_dir = dirs::home_dir().map(|h| h.join(".dm")).unwrap_or_default();
+    // Resolve model alias from the operator-global config dir (alias
+    // tables stay shared across host projects on the same machine).
+    let config_dir = crate::config::current_global_config_dir().unwrap_or_default();
     let aliases = crate::config::load_aliases(&config_dir);
     let resolved_model = aliases.get(model).map_or(model, |s| s.as_str());
     let state_path = workspace.join("chain_state.json");
@@ -432,9 +466,14 @@ pub fn load_chain_config(path: &Path) -> Result<ChainConfig> {
         .canonicalize()
         .with_context(|| format!("chain config not found: {}", path.display()))?;
 
+    // Chain configs are read from the operator-global config dir so a
+    // single chain definition (e.g. `~/.dm/chains/glue.yaml`) works
+    // across every spawned host project. Project-local YAML files are
+    // still picked up via the cwd entry.
+    let global_dm = crate::config::current_global_config_dir();
     let allowed_dirs: Vec<PathBuf> = [
-        dirs::home_dir().map(|h| h.join(".dm").join("chains")),
-        dirs::home_dir().map(|h| h.join(".dm")),
+        global_dm.as_ref().map(|d| d.join("chains")),
+        global_dm,
         std::env::current_dir().ok(),
     ]
     .into_iter()

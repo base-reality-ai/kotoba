@@ -13626,3 +13626,160 @@ fn project_summary_snippet_full_body_fits_under_generous_budget() {
         snippet,
     );
 }
+
+// ── register_host_page (kotoba v0.3 Tier 1 fix) ───────────────────────────
+
+fn host_vocab_page(title: &str, body: &str) -> WikiPage {
+    WikiPage {
+        title: title.to_string(),
+        page_type: PageType::Entity,
+        layer: Layer::Host,
+        sources: vec![],
+        last_updated: "2026-04-28 10:00:00".to_string(),
+        entity_kind: None,
+        purpose: None,
+        key_exports: vec![],
+        dependencies: vec![],
+        outcome: None,
+        scope: vec![],
+        body: body.to_string(),
+    }
+}
+
+#[test]
+fn register_host_page_makes_page_findable_via_search() {
+    // Counterpart to kotoba's host_layer_wiki_indexing.rs — when a host
+    // calls register_host_page (instead of raw fs::write), the page MUST
+    // be visible to search/lookup/stats.
+    let tmp = TempDir::new().unwrap();
+    let wiki = Wiki::open(tmp.path()).unwrap();
+    let page = host_vocab_page(
+        "neko",
+        "# 猫\n\n- Kana: ねこ\n- Meaning: cat\n- Part of speech: noun\n",
+    );
+
+    wiki.register_host_page("entities/Vocabulary/neko.md", &page, "vocab: neko (cat)")
+        .expect("register_host_page");
+
+    let on_disk = tmp.path().join(".dm/wiki/entities/Vocabulary/neko.md");
+    assert!(on_disk.is_file(), "host page must be on disk");
+
+    let hits = wiki.search("cat").expect("search");
+    assert_eq!(
+        hits.len(),
+        1,
+        "search('cat') should find host page: {hits:?}"
+    );
+    assert_eq!(hits[0].path, "entities/Vocabulary/neko.md");
+
+    let read = wiki.read_page("entities/Vocabulary/neko.md").expect("read");
+    assert_eq!(read.layer, Layer::Host);
+}
+
+#[test]
+fn register_host_page_inserts_index_entry_with_metadata() {
+    // The IndexEntry MUST capture page_type, last_updated, and the
+    // operator-supplied one_liner so downstream surfaces (planner_brief,
+    // fresh_pages_snippet) can reason without re-reading the page.
+    let tmp = TempDir::new().unwrap();
+    let wiki = Wiki::open(tmp.path()).unwrap();
+    let page = host_vocab_page("neko", "# 猫\n\nMeaning: cat\n");
+
+    let rel = std::path::PathBuf::from("entities")
+        .join("Vocabulary")
+        .join("neko.md");
+    wiki.register_host_page(&rel, &page, "vocab: neko (cat)")
+        .expect("register_host_page");
+
+    let idx = wiki.load_index().expect("load_index");
+    let entry = idx
+        .entries
+        .iter()
+        .find(|e| e.path == "entities/Vocabulary/neko.md")
+        .expect("entry must be in index");
+    assert_eq!(entry.title, "neko");
+    assert_eq!(entry.category, PageType::Entity);
+    assert_eq!(entry.one_liner, "vocab: neko (cat)");
+    assert_eq!(entry.last_updated.as_deref(), Some("2026-04-28 10:00:00"));
+    assert!(entry.outcome.is_none());
+
+    let stats = wiki.stats().expect("stats");
+    assert_eq!(stats.total_pages, 1, "stats must count host page");
+}
+
+#[test]
+fn register_host_page_appends_log_entry() {
+    // log.md is the audit trail for every page-touching operation. Host
+    // ingest must surface there too so /wiki status / momentum can reason
+    // about host-side activity.
+    let tmp = TempDir::new().unwrap();
+    let wiki = Wiki::open(tmp.path()).unwrap();
+    let page = host_vocab_page("neko", "body");
+
+    wiki.register_host_page("entities/Vocabulary/neko.md", &page, "vocab: neko")
+        .expect("register_host_page");
+
+    let log = std::fs::read_to_string(tmp.path().join(".dm/wiki/log.md")).expect("log.md");
+    assert!(
+        log.contains("host-ingest"),
+        "log must record host-ingest verb: {log}"
+    );
+    assert!(
+        log.contains("entities/Vocabulary/neko.md"),
+        "log must record the registered path: {log}"
+    );
+}
+
+#[test]
+fn register_host_page_upserts_existing_entry() {
+    // Re-registering the same path must overwrite (not duplicate) the
+    // index entry, mirroring ingest_file_internal's semantics.
+    let tmp = TempDir::new().unwrap();
+    let wiki = Wiki::open(tmp.path()).unwrap();
+
+    let mut page = host_vocab_page("neko", "first body");
+    wiki.register_host_page("entities/Vocabulary/neko.md", &page, "first liner")
+        .expect("register first");
+
+    page.body = "second body".into();
+    page.last_updated = "2026-04-28 11:00:00".into();
+    wiki.register_host_page("entities/Vocabulary/neko.md", &page, "second liner")
+        .expect("register second");
+
+    let idx = wiki.load_index().expect("load_index");
+    let matches: Vec<_> = idx
+        .entries
+        .iter()
+        .filter(|e| e.path == "entities/Vocabulary/neko.md")
+        .collect();
+    assert_eq!(matches.len(), 1, "upsert must not duplicate: {matches:?}");
+    assert_eq!(matches[0].one_liner, "second liner");
+    assert_eq!(
+        matches[0].last_updated.as_deref(),
+        Some("2026-04-28 11:00:00")
+    );
+}
+
+#[test]
+fn register_host_page_rejects_kernel_layer() {
+    // Layer enforcement keeps the kernel-source production path
+    // (ingest_file) and the host-authored path from cross-contaminating.
+    let tmp = TempDir::new().unwrap();
+    let wiki = Wiki::open(tmp.path()).unwrap();
+    let mut page = host_vocab_page("neko", "body");
+    page.layer = Layer::Kernel;
+
+    let err = wiki
+        .register_host_page("entities/Vocabulary/neko.md", &page, "liner")
+        .expect_err("kernel-layer page must be rejected");
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    let msg = err.to_string();
+    assert!(msg.contains("Layer::Host"), "err message: {msg}");
+    assert!(msg.contains("Try:"), "err must include hint: {msg}");
+
+    // Disk is unchanged — the rejection happens before any I/O.
+    let on_disk = tmp.path().join(".dm/wiki/entities/Vocabulary/neko.md");
+    assert!(!on_disk.exists(), "rejection must be pre-write");
+    let idx = wiki.load_index().expect("load_index");
+    assert!(idx.entries.is_empty(), "index must stay empty on rejection");
+}

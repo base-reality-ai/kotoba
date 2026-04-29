@@ -296,6 +296,32 @@ pub(crate) fn compute_config_dir(home: &Path, identity: &Identity) -> PathBuf {
     home.join(".dm")
 }
 
+/// Identity-aware project-scoped config dir for the current cwd, without
+/// going through the full `Config::load` pipeline.
+///
+/// Returns `<project_root>/.dm` in host mode (when an identity.toml is
+/// present and `mode = "host"`) and `~/.dm` otherwise. `None` only when
+/// the home directory cannot be resolved.
+///
+/// Mirrors `Config::config_dir`'s policy. Use this from subsystems that
+/// have no `Config` in scope but still need identity-aware project state
+/// (chain pointers, daemon-side host invocations).
+pub fn current_project_config_dir() -> Option<PathBuf> {
+    let home = home_dir()?;
+    let identity = crate::identity::load_for_cwd();
+    Some(compute_config_dir(&home, &identity))
+}
+
+/// Operator-level (`~/.dm`) config dir. Always identity-blind so
+/// `settings.json` / `config.toml` / model aliases stay shared across
+/// every spawned host project on the same machine.
+///
+/// Mirrors `Config::global_config_dir`. Returns `None` only when the
+/// home directory cannot be resolved.
+pub fn current_global_config_dir() -> Option<PathBuf> {
+    home_dir().map(|h| h.join(".dm"))
+}
+
 /// Resolve the Ollama host from the available sources, returning the chosen
 /// raw value and a flag indicating whether it came from the hardcoded
 /// default (i.e. the user has *not* explicitly configured a host).

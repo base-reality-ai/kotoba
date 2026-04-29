@@ -10,8 +10,8 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use super::{
-    parse_page_timestamp, validate_rel, IngestOutcome, PageType, SkipReason, Wiki, WikiIndex,
-    WikiPage, WikiRefreshReport, WikiSeedReport, WikiStats,
+    parse_page_timestamp, validate_rel, IndexEntry, IngestOutcome, Layer, PageType, SkipReason,
+    Wiki, WikiIndex, WikiPage, WikiRefreshReport, WikiSeedReport, WikiStats, INDEX_LOCK,
 };
 
 impl Wiki {
@@ -54,6 +54,71 @@ impl Wiki {
             fs::create_dir_all(parent)?;
         }
         fs::write(&path, page.to_markdown())
+    }
+
+    /// Register a host-authored wiki page: write the file, upsert its
+    /// `IndexEntry`, and append a `host-ingest` line to `log.md` under the
+    /// same `INDEX_LOCK` discipline as `ingest_file_internal`.
+    ///
+    /// Counterpart to `ingest_file` for the kernel-source production path.
+    /// Host capabilities (vocabulary, persona, struggle pages) write inside
+    /// `.dm/wiki/`, which `ingest_file_internal` skips outright
+    /// (`SkipReason::InsideWikiDir`); this method is the explicit host-layer
+    /// entry point so search/lookup/stats see host-authored pages.
+    ///
+    /// `page.layer` MUST be `Layer::Host` — kernel-side production code
+    /// goes through `ingest_file` and would otherwise bypass the
+    /// kernel/host split that identity-aware ranking depends on.
+    pub fn register_host_page<P: AsRef<Path>>(
+        &self,
+        relative_path: P,
+        page: &WikiPage,
+        one_liner: &str,
+    ) -> io::Result<()> {
+        if page.layer != Layer::Host {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "register_host_page requires page.layer == Layer::Host, got {}. \
+                     Try: set the page's layer to Layer::Host before registering, \
+                     or use ingest_file for kernel-source pages.",
+                    page.layer.as_str()
+                ),
+            ));
+        }
+        let relative_path = relative_path.as_ref();
+        let relative_path = relative_path
+            .to_str()
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("unsafe wiki page path: {}", relative_path.display()),
+                )
+            })?
+            .replace('\\', "/");
+        self.write_page(&relative_path, page)?;
+
+        {
+            let _idx_guard = INDEX_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let mut idx = self.load_index().unwrap_or_default();
+            let entry = IndexEntry {
+                title: page.title.clone(),
+                path: relative_path.clone(),
+                one_liner: one_liner.to_string(),
+                category: page.page_type,
+                last_updated: Some(page.last_updated.clone()),
+                outcome: page.outcome.clone(),
+            };
+            if let Some(existing) = idx.entries.iter_mut().find(|e| e.path == relative_path) {
+                *existing = entry;
+            } else {
+                idx.entries.push(entry);
+            }
+            self.save_index(&idx)?;
+        }
+
+        let _ = self.log().append("host-ingest", &relative_path);
+        Ok(())
     }
 
     /// Summary of wiki contents: page counts per category, log-file size,

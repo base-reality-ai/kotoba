@@ -138,6 +138,17 @@ pub enum DaemonEvent {
         session_count: usize,
         pid: u32,
     },
+    /// Synchronous result of a `host.invoke` RPC: the named host
+    /// capability ran to completion and produced a `ToolResult`.
+    /// `is_error` mirrors `ToolResult::is_error` so the caller can
+    /// distinguish a successful invocation that returned an error
+    /// payload (e.g. validation rejection) from a transport-level
+    /// failure (which arrives as `DaemonEvent::Error`).
+    HostInvokeResult {
+        name: String,
+        content: String,
+        is_error: bool,
+    },
     Pong,
 }
 
@@ -375,6 +386,7 @@ impl DaemonEvent {
             DaemonEvent::ChainStatus { .. } => None,
             DaemonEvent::ChainList { .. } => None,
             DaemonEvent::Health { .. } => None,
+            DaemonEvent::HostInvokeResult { .. } => None,
             DaemonEvent::Pong => None,
         }
     }

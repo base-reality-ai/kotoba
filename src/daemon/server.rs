@@ -1647,6 +1647,11 @@ async fn handle_connection(
                 }
             }
 
+            "host.invoke" => {
+                let event = handle_host_invoke(&req.params).await;
+                send_event(&write_half, &event).await?;
+            }
+
             "ping" => {
                 send_event(&write_half, &DaemonEvent::Pong).await?;
             }
@@ -1692,6 +1697,46 @@ async fn send_event(
         .await
         .context("write event to socket")?;
     Ok(())
+}
+
+/// Dispatch a `host.invoke` RPC: resolve `params.name` against the
+/// process-installed host capabilities and translate the result into a
+/// `DaemonEvent`. Only a successful tool call returns
+/// [`DaemonEvent::HostInvokeResult`]; every other shape (missing param,
+/// missing prefix, no host installed, unknown tool, tool-side error)
+/// collapses to [`DaemonEvent::Error`] with an actionable message.
+///
+/// The actual dispatch lives in [`crate::host::invoke_tool`] so the
+/// daemon arm and any future in-process surface (TUI command, web RPC)
+/// stay byte-for-byte aligned.
+async fn handle_host_invoke(params: &serde_json::Value) -> DaemonEvent {
+    let name = match params.get("name").and_then(serde_json::Value::as_str) {
+        Some(n) if !n.is_empty() => n.to_string(),
+        _ => {
+            return DaemonEvent::Error {
+                session_id: String::new(),
+                message: "host.invoke: missing required string param `name`. \
+                     Try: send `{\"name\": \"host_<tool>\", \"args\": {...}}`."
+                    .to_string(),
+            };
+        }
+    };
+    let args = params
+        .get("args")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+
+    match crate::host::invoke_tool(&name, args).await {
+        Ok(result) => DaemonEvent::HostInvokeResult {
+            name,
+            content: result.content,
+            is_error: result.is_error,
+        },
+        Err(e) => DaemonEvent::Error {
+            session_id: String::new(),
+            message: format!("host.invoke: {}", e),
+        },
+    }
 }
 
 #[cfg(test)]
