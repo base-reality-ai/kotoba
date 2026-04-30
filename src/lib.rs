@@ -53,6 +53,7 @@ pub mod host;
 pub mod identity;
 pub mod index;
 pub mod init;
+pub mod llm;
 pub mod logging;
 pub mod mcp;
 pub mod memory;

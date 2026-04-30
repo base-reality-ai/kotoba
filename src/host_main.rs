@@ -913,6 +913,8 @@ recorder_model = "recorder-from-toml"
             updated_at,
             cwd: "/tmp".into(),
             host_project: Some("kotoba".into()),
+            active_persona: None,
+            active_instruction: None,
             model: "test".into(),
             messages: vec![
                 json!({"role": "system", "content": "system prompt — should be skipped"}),

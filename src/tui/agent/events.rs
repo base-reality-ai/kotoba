@@ -685,6 +685,8 @@ mod tests {
             cwd: "/tmp".to_string(),
             host_project: None,
             model: "old-model".to_string(),
+            active_persona: None,
+            active_instruction: None,
             compact_failures: 0,
             turn_count: 0,
             prompt_tokens: 0,

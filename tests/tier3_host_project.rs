@@ -123,6 +123,7 @@ fn add_layered_concept(wiki: &Wiki, rel: &str, title: &str, layer: Layer, body: 
         outcome: None,
         scope: vec![],
         body: body.to_string(),
+        extras: ::std::collections::BTreeMap::new(),
     };
     wiki.write_page(rel, &page).expect("write page");
     let mut idx = wiki.load_index().expect("load index");

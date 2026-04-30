@@ -99,6 +99,8 @@ impl ProjectFixture {
             dependencies: vec![],
             outcome: None,
             scope: vec![],
+
+            extras: std::collections::BTreeMap::new(),
             body,
         };
         let one_liner = format!("{kanji} ({kana}) — {meaning}");

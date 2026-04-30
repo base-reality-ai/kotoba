@@ -301,6 +301,8 @@ fn log_vocabulary_in(root: &Path, input: VocabularyInput<'_>) -> Result<PathBuf>
         dependencies: vec![],
         outcome: None,
         scope: vec![],
+
+        extras: std::collections::BTreeMap::new(),
         body,
     };
 
@@ -436,6 +438,8 @@ impl Tool for LogKanjiTool {
             dependencies: vec![],
             outcome: None,
             scope: vec![],
+
+            extras: std::collections::BTreeMap::new(),
             body,
         };
 
@@ -557,6 +561,8 @@ fn record_struggle_in(
             dependencies: vec![],
             outcome: None,
             scope: vec![],
+
+            extras: std::collections::BTreeMap::new(),
             body: format!("# Struggles for {}\n\n", date),
         },
         Err(e) => return Err(e.into()),
@@ -1798,6 +1804,8 @@ fn new_persona_page(persona: &str, last_updated: &str) -> WikiPage {
         dependencies: vec![],
         outcome: None,
         scope: vec![],
+
+        extras: std::collections::BTreeMap::new(),
         body: format!("# {}\n\n- **Sessions:** 0\n\n## Sessions log\n\n", persona),
     }
 }
@@ -1824,6 +1832,8 @@ fn legacy_persona_page_from_raw(persona: &str, raw: &str, last_updated: &str) ->
         dependencies: vec![],
         outcome: None,
         scope: vec![],
+
+        extras: std::collections::BTreeMap::new(),
         body: markdown_body_without_frontmatter(raw).to_string(),
     }
 }

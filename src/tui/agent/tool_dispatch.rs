@@ -358,6 +358,13 @@ pub async fn execute_tool_round(
 
         let tool_content = crate::util::truncate_tool_output(&result.content);
         let was_truncated = tool_content.len() != result.content.len();
+        if let Some(update) = crate::conversation::instruction_update_from_tool_result(
+            &name,
+            &result.content,
+            result.is_error,
+        ) {
+            crate::conversation::apply_session_instruction_update(session, messages, update);
+        }
         messages.push(json!({
             "role": "tool",
             "name": name,

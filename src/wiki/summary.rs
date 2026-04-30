@@ -369,6 +369,7 @@ impl Wiki {
             dependencies: Vec::new(),
             scope: vec![],
             body,
+            extras: ::std::collections::BTreeMap::new(),
         })
     }
 
@@ -723,6 +724,7 @@ impl Wiki {
                     outcome: None,
                     scope: vec![],
                     body,
+                    extras: ::std::collections::BTreeMap::new(),
                 },
             ));
         }

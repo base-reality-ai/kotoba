@@ -27,6 +27,17 @@ pub struct Session {
     pub host_project: Option<String>,
     pub model: String,
     pub messages: Vec<serde_json::Value>,
+    /// Host/session-selected persona label. This is metadata for UI,
+    /// persistence, and host recorders; the authoritative instruction text
+    /// lives in `active_instruction`.
+    #[serde(default)]
+    pub active_persona: Option<String>,
+    /// Session-scoped effective system instruction. When set, conversation
+    /// loops rewrite the first `role=system` message before every model call
+    /// so mid-session persona/mode switches affect the next assistant turn
+    /// without dropping transcript context.
+    #[serde(default)]
+    pub active_instruction: Option<String>,
     /// Consecutive Stage-3 (full-summary) compaction failures. The circuit
     /// breaker in `compact_pipeline_with_failures` trips at
     /// `MAX_COMPACT_FAILURES` and falls back to emergency compact. Persisting
@@ -77,6 +88,8 @@ impl Session {
             host_project,
             model,
             messages: Vec::new(),
+            active_persona: None,
+            active_instruction: None,
             compact_failures: 0,
             turn_count: 0,
             prompt_tokens: 0,
@@ -138,6 +151,8 @@ impl Session {
             host_project: self.host_project.clone(),
             model: self.model.clone(),
             messages,
+            active_persona: self.active_persona.clone(),
+            active_instruction: self.active_instruction.clone(),
             compact_failures: 0,
             turn_count: 0,
             prompt_tokens: 0,
@@ -155,6 +170,8 @@ mod tests {
     fn session_new_has_no_title() {
         let s = Session::new("/tmp".to_string(), "model".to_string());
         assert!(s.title.is_none());
+        assert!(s.active_persona.is_none());
+        assert!(s.active_instruction.is_none());
     }
 
     #[test]
@@ -189,6 +206,8 @@ mod tests {
         let loaded: Session = serde_json::from_value(json).unwrap();
 
         assert_eq!(loaded.host_project, None);
+        assert!(loaded.active_persona.is_none());
+        assert!(loaded.active_instruction.is_none());
     }
 
     #[test]
@@ -244,12 +263,16 @@ mod tests {
 
     #[test]
     fn fork_preserves_model_and_cwd() {
-        let s = make_session_with_messages();
+        let mut s = make_session_with_messages();
+        s.active_persona = Some("Hiro".to_string());
+        s.active_instruction = Some("Teach as Hiro".to_string());
         let forked = s.fork(None);
         assert_eq!(forked.model, s.model);
         assert_eq!(forked.cwd, s.cwd);
         assert_eq!(forked.host_project, s.host_project);
         assert_eq!(forked.title.as_deref(), Some("test (fork)"));
+        assert_eq!(forked.active_persona.as_deref(), Some("Hiro"));
+        assert_eq!(forked.active_instruction.as_deref(), Some("Teach as Hiro"));
     }
 
     #[test]

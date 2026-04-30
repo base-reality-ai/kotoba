@@ -59,6 +59,7 @@ fn page_roundtrip() {
         outcome: None,
         scope: vec![],
         body: "# compaction.rs\n\nOrchestrates the three-stage compactor.\n".to_string(),
+        extras: ::std::collections::BTreeMap::new(),
     };
     let md = page.to_markdown();
     let parsed = WikiPage::parse(&md).expect("parse");
@@ -133,6 +134,7 @@ fn page_with_host_layer_round_trips_through_markdown() {
         outcome: None,
         scope: vec![],
         body: "# host concept\n".to_string(),
+        extras: ::std::collections::BTreeMap::new(),
     };
     let md = page.to_markdown();
     assert!(
@@ -199,6 +201,7 @@ fn page_with_entity_kind_round_trips_through_markdown() {
         outcome: None,
         scope: vec![],
         body: "# short_id\n\nBorrowed 8-char prefix helper.\n".to_string(),
+        extras: ::std::collections::BTreeMap::new(),
     };
     let md = page.to_markdown();
     assert!(
@@ -225,6 +228,7 @@ fn page_without_entity_kind_omits_line_in_markdown() {
         outcome: None,
         scope: vec![],
         body: "# concept\n".to_string(),
+        extras: ::std::collections::BTreeMap::new(),
     };
     let md = page.to_markdown();
     assert!(
@@ -275,6 +279,7 @@ fn page_round_trips_each_entity_kind_variant() {
             outcome: None,
             scope: vec![],
             body: "# v\n".to_string(),
+            extras: ::std::collections::BTreeMap::new(),
         };
         let parsed = WikiPage::parse(&page.to_markdown()).expect("parse");
         assert_eq!(
@@ -482,6 +487,7 @@ fn key_exports_round_trip_through_markdown() {
         outcome: None,
         scope: vec![],
         body: "# x\n".to_string(),
+        extras: ::std::collections::BTreeMap::new(),
     };
     let md = page.to_markdown();
     let ek_at = md.find("entity_kind:").expect("entity_kind line");
@@ -513,6 +519,7 @@ fn wiki_page_round_trips_scope_field() {
         outcome: None,
         scope: vec!["src/wiki/".to_string(), "src/tui/commands/".to_string()],
         body: "test body".to_string(),
+        extras: ::std::collections::BTreeMap::new(),
     };
     let serialized = with_scope.to_markdown();
     assert!(
@@ -557,6 +564,7 @@ fn key_exports_omitted_from_markdown_when_empty() {
         outcome: None,
         scope: vec![],
         body: "# x\n".to_string(),
+        extras: ::std::collections::BTreeMap::new(),
     };
     let md = page.to_markdown();
     assert!(
@@ -751,6 +759,7 @@ fn dependencies_round_trip_through_markdown() {
         outcome: None,
         scope: vec![],
         body: "# x\n".to_string(),
+        extras: ::std::collections::BTreeMap::new(),
     };
     let md = page.to_markdown();
     let ek_at = md.find("entity_kind:").expect("entity_kind line");
@@ -782,6 +791,7 @@ fn dependencies_omitted_from_markdown_when_empty() {
         outcome: None,
         scope: vec![],
         body: "# x\n".to_string(),
+        extras: ::std::collections::BTreeMap::new(),
     };
     let md = page.to_markdown();
     assert!(
@@ -952,6 +962,7 @@ fn purpose_round_trip_through_markdown() {
         outcome: None,
         scope: vec![],
         body: "# x\n".to_string(),
+        extras: ::std::collections::BTreeMap::new(),
     };
     let md = page.to_markdown();
     let ek_at = md.find("entity_kind:").expect("entity_kind line");
@@ -985,6 +996,7 @@ fn purpose_omitted_from_markdown_when_none_and_legacy_pages_parse_with_none() {
         outcome: None,
         scope: vec![],
         body: "# x\n".to_string(),
+        extras: ::std::collections::BTreeMap::new(),
     };
     let md = page.to_markdown();
     assert!(
@@ -1131,6 +1143,7 @@ fn page_parse_preserves_multi_paragraph_body() {
         outcome: None,
         scope: vec![],
         body: "# Heading\n\nPara 1.\n\nPara 2 with `---` inside.\n".to_string(),
+        extras: ::std::collections::BTreeMap::new(),
     };
     let md = page.to_markdown();
     let parsed = WikiPage::parse(&md).expect("parse");
@@ -1267,6 +1280,7 @@ fn write_page_and_read_page_roundtrip() {
         outcome: None,
         scope: vec![],
         body: "# foo\n\nNotes.\n".to_string(),
+        extras: ::std::collections::BTreeMap::new(),
     };
     wiki.write_page("entities/foo.md", &page).unwrap();
     let read = wiki.read_page("entities/foo.md").unwrap();
@@ -1290,6 +1304,7 @@ fn write_page_creates_subdir() {
         outcome: None,
         scope: vec![],
         body: String::new(),
+        extras: ::std::collections::BTreeMap::new(),
     };
     wiki.write_page("entities/new/deep.md", &page).unwrap();
     assert!(wiki.root().join("entities/new").is_dir());
@@ -1332,6 +1347,7 @@ fn write_page_rejects_parent_traversal() {
         outcome: None,
         scope: vec![],
         body: String::new(),
+        extras: ::std::collections::BTreeMap::new(),
     };
     let err = wiki.write_page("../escape.md", &page).unwrap_err();
     assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
@@ -1407,6 +1423,7 @@ fn write_page_backslash_traversal_stays_in_root() {
         outcome: None,
         scope: vec![],
         body: String::new(),
+        extras: ::std::collections::BTreeMap::new(),
     };
     let err = wiki.write_page("..\\escape.md", &page).unwrap_err();
     assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
@@ -2382,6 +2399,7 @@ fn project_summary_snippet_truncates_at_line_boundary() {
         dependencies: Vec::new(),
         outcome: None,
         scope: vec![],
+        extras: ::std::collections::BTreeMap::new(),
     };
     fs::create_dir_all(wiki.root().join("summaries")).unwrap();
     fs::write(wiki.root().join("summaries/project.md"), page.to_markdown()).unwrap();
@@ -3349,6 +3367,15 @@ fn write_compact_synthesis_writes_page_index_and_log() {
     let text = fs::read_to_string(&page_path).unwrap();
     let page = WikiPage::parse(&text).expect("page parses");
     assert_eq!(page.page_type, PageType::Synthesis);
+    assert_eq!(
+        page.layer,
+        Layer::Kernel,
+        "kernel/default compact synthesis must stay kernel-layered"
+    );
+    assert!(
+        !text.contains("\nlayer:"),
+        "kernel/default compact synthesis must preserve legacy no-layer bytes:\n{text}"
+    );
     assert_eq!(page.sources, vec!["src/main.rs".to_string()]);
     assert!(
         page.body.contains("Fixed bug in main.rs"),
@@ -3371,6 +3398,80 @@ fn write_compact_synthesis_writes_page_index_and_log() {
         log.contains(&format!("compact | {}", out)),
         "log: {:?}",
         log
+    );
+}
+
+#[test]
+fn write_compact_synthesis_uses_host_identity_layer_and_search_finds_it() {
+    let _env_lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    std::env::remove_var("DM_WIKI_AUTO_INGEST");
+    let tmp = TempDir::new().unwrap();
+    let proj = tmp.path().canonicalize().unwrap();
+    let dm = proj.join(".dm");
+    fs::create_dir_all(&dm).unwrap();
+    fs::write(
+        dm.join("identity.toml"),
+        "mode = \"host\"\nhost_project = \"finance-app\"\n",
+    )
+    .unwrap();
+    let wiki = Wiki::open(&proj).unwrap();
+
+    let out = wiki
+        .write_compact_synthesis(
+            "host memory marker for layered search",
+            8,
+            &["src/domain.rs".into()],
+        )
+        .unwrap()
+        .expect("host compact page written");
+
+    let text = fs::read_to_string(wiki.root().join(&out)).unwrap();
+    assert!(
+        text.contains("\nlayer: host\n"),
+        "host compact synthesis must write host layer frontmatter:\n{text}"
+    );
+    let page = WikiPage::parse(&text).expect("parse compact page");
+    assert_eq!(page.layer, Layer::Host);
+
+    let idx = wiki.load_index().unwrap();
+    assert!(
+        idx.entries.iter().any(|e| e.path == out),
+        "host compact synthesis must be indexed"
+    );
+    let identity = crate::identity::load_at(&proj).unwrap();
+    let hits = wiki
+        .search_for_identity("host memory marker", &identity)
+        .expect("search");
+    assert_eq!(hits.len(), 1, "host compact page should be searchable");
+    assert_eq!(hits[0].path, out);
+    assert_eq!(hits[0].layer, Layer::Host);
+}
+
+#[test]
+fn write_compact_synthesis_with_layer_can_pin_kernel_layer_explicitly() {
+    let _env_lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    std::env::remove_var("DM_WIKI_AUTO_INGEST");
+    let tmp = TempDir::new().unwrap();
+    let proj = tmp.path().canonicalize().unwrap();
+    let dm = proj.join(".dm");
+    fs::create_dir_all(&dm).unwrap();
+    fs::write(
+        dm.join("identity.toml"),
+        "mode = \"host\"\nhost_project = \"finance-app\"\n",
+    )
+    .unwrap();
+    let wiki = Wiki::open(&proj).unwrap();
+
+    let out = wiki
+        .write_compact_synthesis_with_layer("kernel override", 1, &[], Layer::Kernel)
+        .unwrap()
+        .expect("compact page written");
+    let text = fs::read_to_string(wiki.root().join(&out)).unwrap();
+    let page = WikiPage::parse(&text).expect("parse compact page");
+    assert_eq!(page.layer, Layer::Kernel);
+    assert!(
+        !text.contains("\nlayer:"),
+        "explicit kernel compact should keep legacy no-layer serialization:\n{text}"
     );
 }
 
@@ -4677,6 +4778,7 @@ fn add_page_with_layer(
         outcome: None,
         scope: vec![],
         body: body.to_string(),
+        extras: ::std::collections::BTreeMap::new(),
     };
     wiki.write_page(rel, &page).unwrap();
     let mut idx = wiki.load_index().unwrap();
@@ -5752,6 +5854,7 @@ fn lint_detects_untracked_page() {
         outcome: None,
         scope: vec![],
         body: String::new(),
+        extras: ::std::collections::BTreeMap::new(),
     };
     wiki.write_page("concepts/loose.md", &page).unwrap();
 
@@ -5779,6 +5882,7 @@ fn lint_detects_category_mismatch() {
         outcome: None,
         scope: vec![],
         body: String::new(),
+        extras: ::std::collections::BTreeMap::new(),
     };
     wiki.write_page("concepts/foo.md", &page).unwrap();
     let mut idx = wiki.load_index().unwrap();
@@ -5815,6 +5919,7 @@ fn lint_multiple_findings_sorted_deterministically() {
         outcome: None,
         scope: vec![],
         body: String::new(),
+        extras: ::std::collections::BTreeMap::new(),
     };
     // One untracked page.
     wiki.write_page("summaries/loose.md", &empty_page(PageType::Summary))
@@ -5970,6 +6075,7 @@ fn lint_with_unparseable_index_surfaces_disk_pages_as_untracked() {
         outcome: None,
         scope: vec![],
         body: String::new(),
+        extras: ::std::collections::BTreeMap::new(),
     };
     wiki.write_page("entities/a.md", &page(PageType::Entity))
         .unwrap();
@@ -6044,6 +6150,7 @@ fn add_page_with_sources(
         outcome: None,
         scope: vec![],
         body: String::new(),
+        extras: ::std::collections::BTreeMap::new(),
     };
     wiki.write_page(rel, &page).unwrap();
     let mut idx = wiki.load_index().unwrap();
@@ -6150,6 +6257,7 @@ fn lint_body_path_missing_fires_for_body_text_phantom() {
         body: "# Drift\n\nReal: `src/wiki/mod.rs`. \
                    Phantom: `src/imaginary/path.rs` (not on disk).\n"
             .to_string(),
+        extras: ::std::collections::BTreeMap::new(),
     };
     wiki.write_page("concepts/drift-probe.md", &page).unwrap();
     let mut idx = wiki.load_index().unwrap();
@@ -6202,6 +6310,7 @@ fn lint_body_path_missing_skips_paths_in_sources_block() {
         outcome: None,
         scope: vec![],
         body: "Body also names `src/imaginary/path.rs` here.".to_string(),
+        extras: ::std::collections::BTreeMap::new(),
     };
     wiki.write_page("concepts/dup.md", &page).unwrap();
     let mut idx = wiki.load_index().unwrap();
@@ -6256,6 +6365,7 @@ fn lint_concept_scope_undocumented_fires_when_file_not_mentioned() {
         outcome: None,
         scope: vec!["src/probe/".to_string()],
         body: "Mentions only foo (not the other one).".to_string(),
+        extras: ::std::collections::BTreeMap::new(),
     };
     wiki.write_page("concepts/probe-module.md", &page).unwrap();
     let mut idx = wiki.load_index().unwrap();
@@ -6317,6 +6427,7 @@ fn lint_concept_scope_undocumented_silent_when_all_mentioned() {
         outcome: None,
         scope: vec!["src/cover/".to_string()],
         body: "Lists alpha and beta both, fully documented.".to_string(),
+        extras: ::std::collections::BTreeMap::new(),
     };
     wiki.write_page("concepts/cover-module.md", &page).unwrap();
     let mut idx = wiki.load_index().unwrap();
@@ -6363,6 +6474,7 @@ fn lint_concept_scope_undocumented_skips_pages_without_scope() {
         outcome: None,
         scope: vec![],
         body: "Has nothing to say about lonely.".to_string(),
+        extras: ::std::collections::BTreeMap::new(),
     };
     wiki.write_page("concepts/unscoped.md", &page).unwrap();
     let mut idx = wiki.load_index().unwrap();
@@ -6408,6 +6520,7 @@ fn lint_concept_scope_undocumented_fires_for_file_level_scope() {
         outcome: None,
         scope: vec!["src/logging.rs".to_string(), "src/warnings.rs".to_string()],
         body: "Mentions logging only.".to_string(),
+        extras: ::std::collections::BTreeMap::new(),
     };
     wiki.write_page("concepts/probe.md", &page).unwrap();
     let mut idx = wiki.load_index().unwrap();
@@ -6466,6 +6579,7 @@ fn lint_concept_scope_undocumented_silent_for_file_level_scope_when_mentioned() 
         outcome: None,
         scope: vec!["src/logging.rs".to_string(), "src/warnings.rs".to_string()],
         body: "Mentions logging and warnings together.".to_string(),
+        extras: ::std::collections::BTreeMap::new(),
     };
     wiki.write_page("concepts/both.md", &page).unwrap();
     let mut idx = wiki.load_index().unwrap();
@@ -6796,6 +6910,7 @@ fn lint_source_drift_findings_sort_after_existing_kinds() {
         outcome: None,
         scope: vec![],
         body: String::new(),
+        extras: ::std::collections::BTreeMap::new(),
     };
     wiki.write_page("concepts/loose.md", &untracked).unwrap();
 
@@ -6908,6 +7023,7 @@ fn lint_malformed_page_sorts_after_all_other_kinds() {
         outcome: None,
         scope: vec![],
         body: String::new(),
+        extras: ::std::collections::BTreeMap::new(),
     };
     wiki.write_page("concepts/loose.md", &untracked).unwrap();
 
@@ -6926,6 +7042,7 @@ fn lint_malformed_page_sorts_after_all_other_kinds() {
         outcome: None,
         scope: vec![],
         body: String::new(),
+        extras: ::std::collections::BTreeMap::new(),
     };
     wiki.write_page("entities/mc.md", &miscat).unwrap();
     let mut idx = wiki.load_index().unwrap();
@@ -7340,6 +7457,7 @@ fn install_entity_page(
         outcome: None,
         scope: vec![],
         body: body.to_string(),
+        extras: ::std::collections::BTreeMap::new(),
     };
     wiki.write_page(page_rel, &page).unwrap();
     let mut idx = wiki.load_index().unwrap_or_default();
@@ -7649,6 +7767,7 @@ fn install_entity_page_with_exports(
         outcome: None,
         scope: vec![],
         body: format!("# {}\n", source_rel),
+        extras: ::std::collections::BTreeMap::new(),
     };
     wiki.write_page(page_rel, &page).unwrap();
     let mut idx = wiki.load_index().unwrap_or_default();
@@ -8037,6 +8156,7 @@ fn install_entity_page_missing_kind(
         outcome: None,
         scope: vec![],
         body: format!("# {}\n", title),
+        extras: ::std::collections::BTreeMap::new(),
     };
     wiki.write_page(page_rel, &page).unwrap();
     let mut idx = wiki.load_index().unwrap_or_default();
@@ -8159,6 +8279,7 @@ fn lint_missing_entity_kind_silent_for_concept_page() {
         outcome: None,
         scope: vec![],
         body: "# concept\n".to_string(),
+        extras: ::std::collections::BTreeMap::new(),
     };
     wiki.write_page("concepts/c.md", &page).unwrap();
     let mut idx = wiki.load_index().unwrap_or_default();
@@ -8735,6 +8856,7 @@ fn refresh_reingests_page_when_source_newer_than_page_ts() {
         outcome: None,
         scope: vec![],
         body: format!("# {}\n", src_rel),
+        extras: ::std::collections::BTreeMap::new(),
     };
     let page_rel = entity_page_rel(src_rel);
     wiki.write_page(&page_rel, &page).unwrap();
@@ -8786,6 +8908,7 @@ fn refresh_reingests_legacy_entity_page_missing_kind() {
         outcome: None,
         scope: vec![],
         body: format!("# {}\n", src_rel),
+        extras: ::std::collections::BTreeMap::new(),
     };
     let page_rel = entity_page_rel(src_rel);
     wiki.write_page(&page_rel, &page).unwrap();
@@ -8844,6 +8967,7 @@ fn refresh_skips_up_to_date_pages() {
         outcome: None,
         scope: vec![],
         body: format!("# {}\n", src_rel),
+        extras: ::std::collections::BTreeMap::new(),
     };
     let page_rel = entity_page_rel(src_rel);
     wiki.write_page(&page_rel, &page).unwrap();
@@ -8898,6 +9022,7 @@ fn refresh_skips_non_entity_pages() {
         outcome: None,
         scope: vec![],
         body: "# concept\n".to_string(),
+        extras: ::std::collections::BTreeMap::new(),
     };
     wiki.write_page("concepts/c.md", &page).unwrap();
     let mut idx = wiki.load_index().unwrap_or_default();
@@ -8953,6 +9078,7 @@ fn refresh_handles_missing_source_file_gracefully() {
         outcome: None,
         scope: vec![],
         body: "# gone\n".to_string(),
+        extras: ::std::collections::BTreeMap::new(),
     };
     wiki.write_page("entities/gone.md", &page).unwrap();
     let mut idx = wiki.load_index().unwrap_or_default();
@@ -9063,6 +9189,7 @@ fn install_rich_entity_page(
         outcome: None,
         scope: vec![],
         body: format!("# {}\n", title),
+        extras: ::std::collections::BTreeMap::new(),
     };
     wiki.write_page(page_rel, &page).unwrap();
     let mut idx = wiki.load_index().unwrap_or_default();
@@ -9516,6 +9643,7 @@ fn planner_brief_includes_item_and_export_drift_pages_deduped() {
         outcome: None,
         scope: vec![],
         body: "# src/dual.rs\n\n## Items\n- `drifted`\n".to_string(),
+        extras: ::std::collections::BTreeMap::new(),
     };
     wiki.write_page("entities/dual.md", &page).unwrap();
 
@@ -10331,6 +10459,7 @@ fn planner_brief_filters_synthesis_and_summary_from_fresh_pages() {
         outcome: None,
         scope: vec![],
         body: "# cycle-99\n".to_string(),
+        extras: ::std::collections::BTreeMap::new(),
     };
     wiki.write_page("synthesis/cycle-99-demo-ts.md", &synth_page)
         .unwrap();
@@ -10349,6 +10478,7 @@ fn planner_brief_filters_synthesis_and_summary_from_fresh_pages() {
         outcome: None,
         scope: vec![],
         body: "# Project\n".to_string(),
+        extras: ::std::collections::BTreeMap::new(),
     };
     wiki.write_page("summaries/project.md", &summary_page)
         .unwrap();
@@ -12642,6 +12772,7 @@ fn wiki_page_outcome_field_serialize_parse_roundtrip_preserves_arbitrary_strings
             outcome: Some(v.to_string()),
             scope: vec![],
             body: "# candidate\n".to_string(),
+            extras: ::std::collections::BTreeMap::new(),
         };
         let md = page.to_markdown();
         let parsed = WikiPage::parse(&md).expect("round-trip parse");
@@ -13643,6 +13774,7 @@ fn host_vocab_page(title: &str, body: &str) -> WikiPage {
         outcome: None,
         scope: vec![],
         body: body.to_string(),
+        extras: ::std::collections::BTreeMap::new(),
     }
 }
 
@@ -13782,4 +13914,141 @@ fn register_host_page_rejects_kernel_layer() {
     assert!(!on_disk.exists(), "rejection must be pre-write");
     let idx = wiki.load_index().expect("load_index");
     assert!(idx.entries.is_empty(), "index must stay empty on rejection");
+}
+
+// ── WikiPage.extras (kotoba v0.4 Tier 3 fix) ──────────────────────────────
+
+#[test]
+fn wikipage_extras_round_trip_via_to_markdown_and_parse() {
+    // Host-defined frontmatter (e.g. kotoba's `sessions_count: 5` on persona
+    // pages) must survive a parse → serialize round trip. Without this,
+    // every Wiki::register_host_page call would silently strip the field.
+    let mut extras = std::collections::BTreeMap::new();
+    extras.insert("sessions_count".to_string(), "5".to_string());
+    extras.insert("persona_id".to_string(), "Hiro".to_string());
+    let page = WikiPage {
+        title: "Hiro".to_string(),
+        page_type: PageType::Entity,
+        layer: Layer::Host,
+        sources: vec!["host/personas/Hiro.md".to_string()],
+        last_updated: "2026-04-28 12:00:00".to_string(),
+        entity_kind: None,
+        purpose: None,
+        key_exports: vec![],
+        dependencies: vec![],
+        outcome: None,
+        scope: vec![],
+        extras: extras.clone(),
+        body: "# Hiro\n".to_string(),
+    };
+
+    let md = page.to_markdown();
+    // Both extras keys appear in sorted order (BTreeMap iteration).
+    let p_persona = md.find("persona_id: Hiro").expect("persona_id line");
+    let p_sessions = md.find("sessions_count: 5").expect("sessions_count line");
+    assert!(
+        p_persona < p_sessions,
+        "extras keys must serialize in sorted order: {md}",
+    );
+
+    let parsed = WikiPage::parse(&md).expect("parse");
+    assert_eq!(parsed.extras, extras, "extras must round-trip");
+    assert_eq!(parsed, page, "full WikiPage must round-trip");
+}
+
+#[test]
+fn wikipage_without_extras_serializes_byte_identically() {
+    // Backwards-compat regression: pages predating the extras slot must
+    // produce the exact same bytes as before. Empty BTreeMap → no extras
+    // frontmatter lines.
+    let page = WikiPage {
+        title: "legacy".to_string(),
+        page_type: PageType::Concept,
+        layer: Layer::Kernel,
+        sources: vec!["src/lib.rs".to_string()],
+        last_updated: "2026-04-28 12:00:00".to_string(),
+        entity_kind: None,
+        purpose: None,
+        key_exports: vec![],
+        dependencies: vec![],
+        outcome: None,
+        scope: vec![],
+        extras: std::collections::BTreeMap::new(),
+        body: "# legacy\n".to_string(),
+    };
+    let expected = "---\n\
+title: legacy\n\
+type: concept\n\
+sources:\n  - src/lib.rs\n\
+last_updated: 2026-04-28 12:00:00\n\
+---\n\
+# legacy\n";
+    assert_eq!(page.to_markdown(), expected);
+}
+
+#[test]
+fn wikipage_parse_captures_unknown_top_level_scalars_as_extras() {
+    // Parser must capture top-level scalars the canonical schema doesn't
+    // recognize — and must NOT capture indented continuation lines, blanks,
+    // or canonical keys.
+    let md = "---\n\
+title: Hiro\n\
+type: entity\n\
+layer: host\n\
+sessions_count: 5\n\
+persona_id: Hiro\n\
+sources:\n  - host/personas/Hiro.md\n\
+last_updated: 2026-04-28 12:00:00\n\
+---\n\
+# Hiro\n";
+    let page = WikiPage::parse(md).expect("parse");
+    assert_eq!(page.extras.len(), 2, "two unknown keys captured");
+    assert_eq!(
+        page.extras.get("sessions_count").map(String::as_str),
+        Some("5"),
+    );
+    assert_eq!(
+        page.extras.get("persona_id").map(String::as_str),
+        Some("Hiro"),
+    );
+    // Canonical keys do NOT leak into extras.
+    assert!(!page.extras.contains_key("title"));
+    assert!(!page.extras.contains_key("type"));
+    assert!(!page.extras.contains_key("layer"));
+    assert!(!page.extras.contains_key("sources"));
+    assert!(!page.extras.contains_key("last_updated"));
+}
+
+#[test]
+fn register_host_page_round_trips_extras_to_disk() {
+    // The full host-author workflow: build a page with custom frontmatter,
+    // hand it to register_host_page, read it back via read_page. Extras
+    // must survive intact, the page must be findable via search, and the
+    // index entry must point at the on-disk path.
+    let tmp = TempDir::new().unwrap();
+    let wiki = Wiki::open(tmp.path()).unwrap();
+
+    let mut extras = std::collections::BTreeMap::new();
+    extras.insert("sessions_count".to_string(), "5".to_string());
+    let mut page = host_vocab_page("Hiro", "# Hiro persona\n");
+    page.extras = extras.clone();
+
+    wiki.register_host_page("entities/Personas/Hiro.md", &page, "persona: Hiro")
+        .expect("register_host_page");
+
+    let read = wiki.read_page("entities/Personas/Hiro.md").expect("read");
+    assert_eq!(
+        read.extras, extras,
+        "extras must persist through register_host_page → read_page"
+    );
+
+    // Raw on-disk bytes must contain the extra frontmatter line so any
+    // tool that reads the .md file outside the canonical parser also sees
+    // the host-authored field.
+    let on_disk = tmp.path().join(".dm/wiki/entities/Personas/Hiro.md");
+    let raw = std::fs::read_to_string(&on_disk).expect("read raw");
+    assert!(
+        raw.contains("\nsessions_count: 5\n"),
+        "raw page must contain extras line: {raw}",
+    );
 }

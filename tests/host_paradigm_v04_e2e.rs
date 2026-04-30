@@ -128,6 +128,7 @@ async fn host_paradigm_v04_three_tier_fix_lands_no_leakage() {
         outcome: None,
         scope: vec![],
         body: "Kana: ねこ\nMeaning: cat\n".to_string(),
+        extras: ::std::collections::BTreeMap::new(),
     };
     wiki.register_host_page(
         "entities/Vocabulary/neko.md",

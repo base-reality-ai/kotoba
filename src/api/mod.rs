@@ -1530,6 +1530,8 @@ mod tests {
             host_project: Some("finance-app".into()),
             model: "gemma4:26b".into(),
             messages: vec![serde_json::json!({"role": "user", "content": "hello"})],
+            active_persona: None,
+            active_instruction: None,
             compact_failures: 0,
             turn_count: 1,
             prompt_tokens: 0,
@@ -2340,6 +2342,7 @@ skip_permissions_warning: true
             outcome: None,
             scope: vec![],
             body: body.to_string(),
+            extras: ::std::collections::BTreeMap::new(),
         };
         wiki.write_page("summaries/project.md", &page).unwrap();
     }

@@ -126,6 +126,7 @@ impl Wiki {
             outcome: None,
             scope: vec![],
             body,
+            extras: ::std::collections::BTreeMap::new(),
         };
         self.write_page(&page_rel, &page)?;
 

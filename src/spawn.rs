@@ -3,8 +3,9 @@
 //! This module handles copying the canonical kernel, configuring the host
 //! identity, and generating a starter domain project.
 
-use crate::identity::{render_toml, Identity, Mode};
+use crate::identity::{load_at, render_toml, Identity, Mode};
 use anyhow::Context;
+use std::path::{Path, PathBuf};
 use tokio::process::Command;
 
 pub async fn run_spawn(project_name: &str, canonical_arg: Option<&str>) -> anyhow::Result<()> {
@@ -31,6 +32,7 @@ pub async fn run_spawn(project_name: &str, canonical_arg: Option<&str>) -> anyho
         .map(|s| s.to_string())
         .or_else(|| std::env::var("DM_CANONICAL_REPO").ok())
         .unwrap_or_else(|| "https://github.com/base-reality-ai/dark-matter.git".to_string());
+    refuse_host_mode_canonical_source(&canonical_repo, &cwd)?;
 
     let status = Command::new("git")
         .args([
@@ -154,6 +156,13 @@ This is a host project built on the dark-matter kernel.
                 cargo_toml_path.display(),
             )
         })?;
+
+    // Sweep `examples/*/Cargo.toml` so any example that depends on canonical dm
+    // by package name (`dark-matter = { path = "../.." }`) instead points at
+    // the spawned host's package name. The lib crate keeps `name = "dark_matter"`,
+    // so example sources that `use dark_matter::*` still resolve. Without this,
+    // every spawned project inherits a broken example until the operator hand-edits.
+    rewrite_example_cargo_deps(&target_dir, project_name).await?;
 
     let host_main_content = format!(
         "\
@@ -348,7 +357,99 @@ fn rewrite_host_package_section(cargo_toml: &str, project_name: &str) -> String 
     out
 }
 
-pub(crate) async fn cleanup_spawned_kernel(target_dir: &std::path::Path) -> anyhow::Result<()> {
+/// Rewrite path-style `dark-matter = { path = ... }` dependency lines in any
+/// `examples/*/Cargo.toml` to the host project's package name. Idempotent:
+/// once rewritten, the substring no longer matches. Missing `examples/` dir
+/// is a no-op (canonical dm without examples still spawns cleanly).
+async fn rewrite_example_cargo_deps(spawn_root: &Path, host_project: &str) -> anyhow::Result<()> {
+    let examples_dir = spawn_root.join("examples");
+    if !examples_dir.exists() {
+        return Ok(());
+    }
+    let mut entries = tokio::fs::read_dir(&examples_dir).await.with_context(|| {
+        format!(
+            "Failed to read {}. Try: check read permissions on the spawned project's examples directory.",
+            examples_dir.display(),
+        )
+    })?;
+    while let Some(entry) = entries.next_entry().await.with_context(|| {
+        format!(
+            "Failed to enumerate entries under {}. Try: re-run after resolving filesystem errors on the spawned project's examples directory.",
+            examples_dir.display(),
+        )
+    })? {
+        let cargo_path = entry.path().join("Cargo.toml");
+        if !cargo_path.is_file() {
+            continue;
+        }
+        let body = tokio::fs::read_to_string(&cargo_path)
+            .await
+            .with_context(|| {
+                format!(
+                    "Failed to read {}. Try: check permissions on the example's Cargo.toml.",
+                    cargo_path.display(),
+                )
+            })?;
+        let rewritten = body.replace(
+            "dark-matter = { path",
+            &format!("{} = {{ path", host_project),
+        );
+        if rewritten != body {
+            tokio::fs::write(&cargo_path, rewritten)
+                .await
+                .with_context(|| {
+                    format!(
+                        "Failed to write {}. Try: check write permissions on the example's Cargo.toml.",
+                        cargo_path.display(),
+                    )
+                })?;
+        }
+    }
+    Ok(())
+}
+
+fn refuse_host_mode_canonical_source(canonical_repo: &str, cwd: &Path) -> anyhow::Result<()> {
+    let Some(source_root) = canonical_repo_local_path(canonical_repo, cwd) else {
+        return Ok(());
+    };
+    let identity = load_at(&source_root).with_context(|| {
+        format!(
+            "Failed to read canonical source identity at {}. Try: fix or remove its .dm/identity.toml before using it as --canonical.",
+            source_root.display(),
+        )
+    })?;
+    if identity.mode == Mode::Host {
+        anyhow::bail!(
+            "refusing to spawn from a host project's source tree (mode = host). Try: --canonical https://github.com/base-reality-ai/Dark-Matter"
+        );
+    }
+    Ok(())
+}
+
+fn canonical_repo_local_path(canonical_repo: &str, cwd: &Path) -> Option<PathBuf> {
+    if let Some(rest) = canonical_repo.strip_prefix("file://") {
+        if rest.is_empty() {
+            return None;
+        }
+        return Some(PathBuf::from(rest));
+    }
+    if canonical_repo.contains("://") || canonical_repo.contains('@') {
+        return None;
+    }
+    let path = PathBuf::from(canonical_repo);
+    let local_path = if path.is_absolute() {
+        path
+    } else {
+        cwd.join(path)
+    };
+    if local_path.exists() {
+        Some(local_path)
+    } else {
+        None
+    }
+}
+
+pub(crate) async fn cleanup_spawned_kernel(target_dir: &Path) -> anyhow::Result<()> {
     // These removals are strictly required: failing to remove .dm would cause the spawned project
     // to inherit the kernel's identity and wiki; failing to remove .git or target would bloat the
     // new workspace or confuse version control. Therefore, non-NotFound failures are hard errors.
@@ -393,7 +494,10 @@ pub fn validate_project_name(project_name: &str) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{rewrite_host_package_section, spawn_success_message, validate_project_name};
+    use super::{
+        canonical_repo_local_path, refuse_host_mode_canonical_source, rewrite_host_package_section,
+        spawn_success_message, validate_project_name,
+    };
 
     #[test]
     fn validate_project_name_accepts_safe_names() {
@@ -526,6 +630,178 @@ git = \"https://example.com/foo.git\"
             out.contains("\n  .dm/wiki/"),
             "missing host wiki hint: {out}"
         );
+    }
+
+    #[test]
+    fn canonical_repo_local_path_accepts_file_url_absolute_and_relative_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cwd = tmp.path();
+        let local = cwd.join("canonical");
+        std::fs::create_dir_all(&local).unwrap();
+
+        assert_eq!(
+            canonical_repo_local_path(&format!("file://{}", local.display()), cwd).as_deref(),
+            Some(local.as_path()),
+        );
+        assert_eq!(
+            canonical_repo_local_path(local.to_str().unwrap(), cwd).as_deref(),
+            Some(local.as_path()),
+        );
+        assert_eq!(
+            canonical_repo_local_path("canonical", cwd).as_deref(),
+            Some(local.as_path()),
+        );
+    }
+
+    #[test]
+    fn canonical_repo_local_path_skips_remote_urls_and_scp_syntax() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cwd = tmp.path();
+        assert!(canonical_repo_local_path(
+            "https://github.com/base-reality-ai/dark-matter.git",
+            cwd,
+        )
+        .is_none());
+        assert!(canonical_repo_local_path("git@github.com:org/repo.git", cwd).is_none());
+        assert!(canonical_repo_local_path("missing-local-path", cwd).is_none());
+    }
+
+    #[test]
+    fn refuse_host_mode_canonical_source_rejects_local_host_identity() {
+        let tmp = tempfile::tempdir().unwrap();
+        let canonical = tmp.path().join("host-source");
+        let dm_dir = canonical.join(".dm");
+        std::fs::create_dir_all(&dm_dir).unwrap();
+        std::fs::write(
+            dm_dir.join(crate::identity::IDENTITY_FILENAME),
+            "mode = \"host\"\nhost_project = \"kotoba\"\n",
+        )
+        .unwrap();
+
+        let err = refuse_host_mode_canonical_source(
+            &format!("file://{}", canonical.display()),
+            tmp.path(),
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(
+            err.contains("refusing to spawn from a host project's source tree"),
+            "wrong refusal: {err}",
+        );
+        assert!(
+            err.contains("--canonical https://github.com/base-reality-ai/Dark-Matter"),
+            "missing canonical retry hint: {err}",
+        );
+    }
+
+    #[test]
+    fn refuse_host_mode_canonical_source_allows_kernel_identity() {
+        let tmp = tempfile::tempdir().unwrap();
+        let canonical = tmp.path().join("kernel-source");
+        let dm_dir = canonical.join(".dm");
+        std::fs::create_dir_all(&dm_dir).unwrap();
+        std::fs::write(
+            dm_dir.join(crate::identity::IDENTITY_FILENAME),
+            "mode = \"kernel\"\n",
+        )
+        .unwrap();
+
+        refuse_host_mode_canonical_source(canonical.to_str().unwrap(), tmp.path())
+            .expect("kernel-mode canonical source should be allowed");
+    }
+
+    #[tokio::test]
+    async fn rewrite_example_cargo_deps_rewrites_canonical_path_dep() {
+        let tmp = tempfile::tempdir().unwrap();
+        let example_dir = tmp.path().join("examples").join("host-skeleton");
+        tokio::fs::create_dir_all(&example_dir).await.unwrap();
+        let cargo = example_dir.join("Cargo.toml");
+        let body = "\
+[package]
+name = \"host-skeleton\"
+version = \"0.1.0\"
+edition = \"2021\"
+
+[dependencies]
+tokio = { version = \"1\", features = [\"full\"] }
+dark-matter = { path = \"../..\" }
+serde_json = \"1\"
+";
+        tokio::fs::write(&cargo, body).await.unwrap();
+
+        super::rewrite_example_cargo_deps(tmp.path(), "finance-app")
+            .await
+            .unwrap();
+
+        let after = tokio::fs::read_to_string(&cargo).await.unwrap();
+        assert!(
+            after.contains("finance-app = { path = \"../..\" }"),
+            "rewrite missed the dark-matter path dep:\n{after}",
+        );
+        assert!(
+            !after.contains("dark-matter = { path"),
+            "stale dark-matter path dep survived rewrite:\n{after}",
+        );
+        // Unrelated lines must pass through verbatim.
+        assert!(after.contains("tokio = { version = \"1\""));
+        assert!(after.contains("serde_json = \"1\""));
+        assert!(after.contains("name = \"host-skeleton\""));
+    }
+
+    #[tokio::test]
+    async fn rewrite_example_cargo_deps_is_idempotent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let example_dir = tmp.path().join("examples").join("host-skeleton");
+        tokio::fs::create_dir_all(&example_dir).await.unwrap();
+        let cargo = example_dir.join("Cargo.toml");
+        let body = "\
+[dependencies]
+dark-matter = { path = \"../..\" }
+";
+        tokio::fs::write(&cargo, body).await.unwrap();
+
+        super::rewrite_example_cargo_deps(tmp.path(), "finance-app")
+            .await
+            .unwrap();
+        let after_first = tokio::fs::read_to_string(&cargo).await.unwrap();
+        super::rewrite_example_cargo_deps(tmp.path(), "finance-app")
+            .await
+            .unwrap();
+        let after_second = tokio::fs::read_to_string(&cargo).await.unwrap();
+
+        assert_eq!(after_first, after_second);
+    }
+
+    #[tokio::test]
+    async fn rewrite_example_cargo_deps_missing_examples_dir_is_noop() {
+        let tmp = tempfile::tempdir().unwrap();
+        // No examples/ dir under tmp.
+        super::rewrite_example_cargo_deps(tmp.path(), "finance-app")
+            .await
+            .expect("missing examples/ should be a clean no-op");
+    }
+
+    #[tokio::test]
+    async fn rewrite_example_cargo_deps_leaves_unrelated_cargo_untouched() {
+        let tmp = tempfile::tempdir().unwrap();
+        let example_dir = tmp.path().join("examples").join("plain");
+        tokio::fs::create_dir_all(&example_dir).await.unwrap();
+        let cargo = example_dir.join("Cargo.toml");
+        // No `dark-matter = { path ...` line — must round-trip byte-identically.
+        let body = "\
+[package]
+name = \"plain\"
+
+[dependencies]
+serde = \"1\"
+";
+        tokio::fs::write(&cargo, body).await.unwrap();
+        super::rewrite_example_cargo_deps(tmp.path(), "finance-app")
+            .await
+            .unwrap();
+        let after = tokio::fs::read_to_string(&cargo).await.unwrap();
+        assert_eq!(after, body, "unrelated example Cargo.toml must not change");
     }
 
     #[tokio::test]

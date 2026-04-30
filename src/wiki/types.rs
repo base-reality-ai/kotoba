@@ -1,5 +1,6 @@
 //! Wiki data types — pure value objects shared across wiki submodules.
 
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::fs;
 use std::io;
@@ -221,6 +222,16 @@ pub struct WikiPage {
     /// round-trip with empty `scope`. Path-prefix match only (no globs)
     /// per C38 design.
     pub scope: Vec<String>,
+    /// Host-defined frontmatter scalar keys that canonical dm doesn't
+    /// recognize. Preserved through parse → serialize round trips so a
+    /// host project can ship its own metadata (e.g. kotoba's
+    /// `sessions_count: N` on persona pages) without losing it on the
+    /// next `Wiki::register_host_page` call. Canonical keys always win on
+    /// name collision: a stray `title:` in `extras` would never shadow the
+    /// typed `title` field. `BTreeMap` so serialization order is stable.
+    /// Empty map serializes to no frontmatter lines (byte-identity with
+    /// pages predating this field).
+    pub extras: BTreeMap<String, String>,
     pub body: String,
 }
 
@@ -271,6 +282,12 @@ impl WikiPage {
             writeln!(out, "  - {}", src).expect("write to String never fails");
         }
         writeln!(out, "last_updated: {}", self.last_updated).expect("write to String never fails");
+        // Host-defined extras serialize after every canonical field, in
+        // sorted-key order (BTreeMap iteration). Empty map writes nothing,
+        // preserving byte-identity with pages that don't use the slot.
+        for (key, value) in &self.extras {
+            writeln!(out, "{}: {}", key, value).expect("write to String never fails");
+        }
         out.push_str("---\n");
         out.push_str(&self.body);
         out
@@ -297,6 +314,7 @@ impl WikiPage {
         let mut dependencies: Vec<String> = Vec::new();
         let mut outcome: Option<String> = None;
         let mut scope: Vec<String> = Vec::new();
+        let mut extras: BTreeMap<String, String> = BTreeMap::new();
         let mut in_sources = false;
         let mut in_key_exports = false;
         let mut in_dependencies = false;
@@ -375,6 +393,13 @@ impl WikiPage {
                 in_scope = true;
             } else if let Some(v) = line.strip_prefix("last_updated: ") {
                 last_updated = Some(v.to_string());
+            } else if let Some((key, value)) = parse_extra_scalar(line) {
+                // Top-level scalar key the canonical schema doesn't recognize.
+                // Preserve it so host-defined frontmatter (e.g. kotoba's
+                // `sessions_count: 5` on persona pages) survives a round trip.
+                // Indented lines (children of a list section) and blank lines
+                // are filtered by `parse_extra_scalar` itself.
+                extras.insert(key, value);
             }
         }
 
@@ -390,9 +415,48 @@ impl WikiPage {
             dependencies,
             outcome,
             scope,
+            extras,
             body: body.to_string(),
         })
     }
+}
+
+/// Pull a `key: value` pair out of a frontmatter line that the canonical
+/// schema didn't recognize. Returns `None` for anything that isn't a top-
+/// level scalar — indented continuation lines, blanks, comments, lines
+/// without a `:`, or lines whose key is empty / not a valid scalar
+/// identifier (whitespace, `-`, `#`). Does NOT echo back canonical keys
+/// (`title`, `type`, `layer`, etc.) — the parser strips those upstream
+/// before falling through to extras, so a stray `title:` here would only
+/// arrive on a malformed page and is treated as an unknown scalar that
+/// the caller's serializer will round-trip alongside the typed `title`.
+fn parse_extra_scalar(line: &str) -> Option<(String, String)> {
+    if line.is_empty() {
+        return None;
+    }
+    // Indented lines belong to the active list section (sources/key_exports/
+    // dependencies/scope) and are handled inline above. Lines starting with
+    // `#` or `-` aren't scalar keys.
+    let first = line.as_bytes()[0];
+    if first == b' ' || first == b'\t' || first == b'#' || first == b'-' {
+        return None;
+    }
+    let (key, value) = line.split_once(':')?;
+    let key = key.trim();
+    if key.is_empty() {
+        return None;
+    }
+    // Reject non-identifier-shaped keys (containing spaces or quotes) so a
+    // malformed body line that snuck into the header doesn't become an
+    // extras entry.
+    if !key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+        return None;
+    }
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    Some((key.to_string(), value.to_string()))
 }
 
 /// One entry in `index.md`.

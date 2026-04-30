@@ -109,6 +109,8 @@ fn host_layer_pages_written_via_write_page_also_skip_index() {
         dependencies: vec![],
         outcome: None,
         scope: vec![],
+
+        extras: std::collections::BTreeMap::new(),
         body: "Kana: ねこ. Meaning: cat.".to_string(),
     };
     wiki.write_page("entities/Vocabulary/neko.md", &page)

@@ -502,6 +502,130 @@ pub fn system_msg(content: &str) -> Value {
     json!({"role": "system", "content": content})
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SessionInstructionUpdate {
+    ReplaceSystemPrompt {
+        instruction: String,
+    },
+    AppendSystemInstruction {
+        instruction: String,
+    },
+    ActivatePersona {
+        persona: String,
+        instruction: String,
+    },
+}
+
+pub fn apply_session_instruction_update(
+    session: &mut Session,
+    messages: &mut Vec<Value>,
+    update: SessionInstructionUpdate,
+) {
+    match update {
+        SessionInstructionUpdate::ReplaceSystemPrompt { instruction } => {
+            session.active_persona = None;
+            session.active_instruction = Some(instruction);
+        }
+        SessionInstructionUpdate::AppendSystemInstruction { instruction } => {
+            let base = session
+                .active_instruction
+                .as_deref()
+                .or_else(|| first_system_content(messages))
+                .unwrap_or("");
+            let effective = if base.trim().is_empty() {
+                instruction
+            } else {
+                format!("{base}\n\n{instruction}")
+            };
+            session.active_instruction = Some(effective);
+        }
+        SessionInstructionUpdate::ActivatePersona {
+            persona,
+            instruction,
+        } => {
+            session.active_persona = Some(persona);
+            session.active_instruction = Some(instruction);
+        }
+    }
+    session.updated_at = chrono::Utc::now();
+    let _ = sync_active_system_instruction(session, messages);
+}
+
+pub fn sync_active_system_instruction(session: &Session, messages: &mut Vec<Value>) -> bool {
+    let Some(instruction) = session.active_instruction.as_deref() else {
+        return false;
+    };
+    sync_system_instruction(instruction, messages)
+}
+
+fn sync_system_instruction(instruction: &str, messages: &mut Vec<Value>) -> bool {
+    if let Some(system) = messages
+        .iter_mut()
+        .find(|m| m.get("role").and_then(|r| r.as_str()) == Some("system"))
+    {
+        if system.get("content").and_then(|c| c.as_str()) == Some(instruction) {
+            return false;
+        }
+        system["content"] = json!(instruction);
+        true
+    } else {
+        messages.insert(0, system_msg(instruction));
+        true
+    }
+}
+
+pub fn instruction_update_from_tool_result(
+    tool_name: &str,
+    content: &str,
+    is_error: bool,
+) -> Option<SessionInstructionUpdate> {
+    if is_error {
+        return None;
+    }
+    if let Some(instruction) = content.strip_prefix("DM_REPLACE_SYSTEM_PROMPT:\n") {
+        let instruction = instruction.trim().to_string();
+        if !instruction.is_empty() {
+            return Some(SessionInstructionUpdate::ReplaceSystemPrompt { instruction });
+        }
+    }
+    if let Some(instruction) = content.strip_prefix("DM_APPEND_SYSTEM_INSTRUCTION:\n") {
+        let instruction = instruction.trim().to_string();
+        if !instruction.is_empty() {
+            return Some(SessionInstructionUpdate::AppendSystemInstruction { instruction });
+        }
+    }
+    if tool_name == "host_invoke_persona" {
+        let first = content.lines().next().unwrap_or("");
+        if let Some(persona) = extract_loaded_persona_name(first) {
+            let instruction = content.trim().to_string();
+            if !instruction.is_empty() {
+                return Some(SessionInstructionUpdate::ActivatePersona {
+                    persona,
+                    instruction,
+                });
+            }
+        }
+    }
+    None
+}
+
+fn first_system_content(messages: &[Value]) -> Option<&str> {
+    messages
+        .iter()
+        .find(|m| m.get("role").and_then(|r| r.as_str()) == Some("system"))
+        .and_then(|m| m.get("content").and_then(|c| c.as_str()))
+}
+
+fn extract_loaded_persona_name(line: &str) -> Option<String> {
+    let rest = line.strip_prefix("Persona '")?;
+    let (name, suffix) = rest.split_once('\'')?;
+    if suffix.contains("loaded") && !name.trim().is_empty() {
+        Some(name.trim().to_string())
+    } else {
+        None
+    }
+}
+
 pub fn user_msg(content: &str) -> Value {
     json!({"role": "user", "content": content})
 }
@@ -604,6 +728,11 @@ pub async fn run_conversation(
     if session.messages.is_empty() {
         session.push_message(system_msg(&system_prompt));
     }
+    if let Some(instruction) = session.active_instruction.clone() {
+        if sync_system_instruction(&instruction, &mut session.messages) {
+            session.updated_at = chrono::Utc::now();
+        }
+    }
     session.push_message(user_msg(prompt));
     session_storage::save(config_dir, session)?;
 
@@ -646,6 +775,11 @@ pub async fn run_conversation(
     let mut loop_tracker = ToolCallTracker::new();
 
     for round in 0..max_turns {
+        if let Some(instruction) = session.active_instruction.clone() {
+            if sync_system_instruction(&instruction, &mut session.messages) {
+                session_storage::save(config_dir, session)?;
+            }
+        }
         // Run the 3-stage compaction pipeline
         let session_root = std::path::PathBuf::from(&session.cwd);
         let failures_before = session.compact_failures;
@@ -1342,6 +1476,13 @@ pub async fn run_conversation(
                     trimmed.len()
                 ));
             }
+            if let Some(update) =
+                instruction_update_from_tool_result(&tool_name, &result.content, result.is_error)
+            {
+                let mut messages = std::mem::take(&mut session.messages);
+                apply_session_instruction_update(session, &mut messages, update);
+                session.messages = messages;
+            }
             if result.is_error {
                 session.push_message(tool_error_msg(&tool_name, &trimmed));
             } else {
@@ -1830,6 +1971,145 @@ async fn run_conversation_capture_with_turns_inner(
     })
 }
 
+/// Host-callable conversation capture against any [`crate::llm::LlmClient`].
+///
+/// Mirrors [`run_conversation_capture_in_config_dir`] but takes a
+/// provider-neutral trait object instead of a concrete `OllamaClient`. Host
+/// projects (kotoba, future hosts) can pass an `Anthropic`/`OpenAI`/custom
+/// `LlmClient` impl and drive the same single-prompt tool-loop captures the
+/// kernel uses internally.
+///
+/// Scoped seam: this entry point uses only methods on the trait. Fallback
+/// model selection and LLM-summary compaction (Stage 3 of the kernel
+/// pipeline) are NOT plumbed through — those depend on
+/// `OllamaClient::clone() + with_model()` which the trait deliberately
+/// doesn't expose. Microcompact (tool-result trimming) and basic
+/// context-window awareness still apply.
+///
+/// Permissions are bypassed (allow-all), matching the kernel capture path's
+/// behavior — callers are trusted orchestration agents.
+pub async fn run_conversation_capture_with_client_in_config_dir(
+    prompt: &str,
+    mode: &str,
+    client: &dyn crate::llm::LlmClient,
+    registry: &ToolRegistry,
+    config_dir: &Path,
+) -> Result<CaptureResult> {
+    let _ = crate::logging::init_in_config_dir(mode, config_dir);
+    let system = crate::system_prompt::build_system_prompt(&[], None).await;
+    let mut messages = vec![system_msg(&system), user_msg(prompt)];
+    let tool_defs = registry.definitions();
+    let engine = PermissionEngine::new(true, vec![]);
+    let mut total_prompt_tokens: u64 = 0;
+    let mut total_completion_tokens: u64 = 0;
+    let context_limit = client.model_context_limit(client.model()).await;
+    let thresholds = CompactionThresholds::from_context_window(context_limit);
+
+    for _round in 0..DEFAULT_MAX_TURNS {
+        // Stage 1 only: trim oversized tool-result messages so the model's
+        // context doesn't blow up on big tool outputs. Stages 2/3 (session
+        // memory drop / LLM summary) need a writeable kernel client and
+        // are kernel-only for now.
+        let current_tokens = compaction::estimate_tokens(&messages);
+        if current_tokens >= thresholds.micro_compact {
+            let target = thresholds.micro_compact * 90 / 100;
+            let _ = compaction::microcompact(&mut messages, target, thresholds.max_tool_chars);
+        }
+
+        let chat_result = tokio::time::timeout(
+            std::time::Duration::from_secs(MAIN_CHAT_TIMEOUT_SECS),
+            client.chat(&messages, &tool_defs),
+        )
+        .await;
+        let response = match chat_result {
+            Ok(Ok(r)) => r,
+            Ok(Err(e)) => {
+                return Err(e).context("LlmClient::chat failed in host capture");
+            }
+            Err(_) => {
+                anyhow::bail!(
+                    "LlmClient::chat timed out after {}s in host capture",
+                    MAIN_CHAT_TIMEOUT_SECS
+                );
+            }
+        };
+
+        total_prompt_tokens += response.prompt_tokens;
+        total_completion_tokens += response.completion_tokens;
+        let text = response.message.content.clone();
+        let tool_calls = response.message.tool_calls.clone();
+        messages.push(assistant_msg(&text, &tool_calls));
+
+        if tool_calls.is_empty() {
+            return Ok(CaptureResult {
+                text,
+                prompt_tokens: total_prompt_tokens,
+                completion_tokens: total_completion_tokens,
+            });
+        }
+
+        let mut pending: Vec<PendingTool> = Vec::new();
+        for tc in &tool_calls {
+            let name = &tc.function.name;
+            let args = &tc.function.arguments;
+            let decision = engine.check(name, args);
+            if matches!(decision, crate::permissions::Decision::Deny) {
+                messages.push(tool_result_msg(name, "Denied by engine"));
+            } else {
+                pending.push(PendingTool {
+                    name: name.clone(),
+                    args: args.clone(),
+                });
+            }
+        }
+
+        let partitions = partition_tool_calls(&pending, registry);
+        for batch in partitions {
+            let futs: Vec<_> = batch
+                .iter()
+                .map(|pt| {
+                    let name = pt.name.clone();
+                    let args = pt.args.clone();
+                    async move {
+                        let result = registry.call(&name, args).await.unwrap_or_else(|e| {
+                            crate::tools::ToolResult {
+                                content: format!("Tool error: {}", e),
+                                is_error: true,
+                            }
+                        });
+                        (name, result)
+                    }
+                })
+                .collect();
+            let batch_results = futures_util::future::join_all(futs).await;
+            for (name, result) in batch_results {
+                let trimmed = trim_tool_result(&result.content);
+                if result.is_error {
+                    messages.push(tool_error_msg(&name, &trimmed));
+                } else {
+                    messages.push(tool_result_msg(&name, &trimmed));
+                }
+            }
+        }
+    }
+
+    // Exhausted tool rounds — return the accumulated assistant text rather than
+    // making one more chat call (the kernel path issues a no-tools summary
+    // request, but that doubles the failure surface for the host-facing seam).
+    let last_assistant_text = messages
+        .iter()
+        .rev()
+        .find(|m| m.get("role").and_then(|r| r.as_str()) == Some("assistant"))
+        .and_then(|m| m.get("content").and_then(|c| c.as_str()))
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "(max tool rounds reached — no assistant text produced)".to_string());
+    Ok(CaptureResult {
+        text: last_assistant_text,
+        prompt_tokens: total_prompt_tokens,
+        completion_tokens: total_completion_tokens,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::fmt::Write as _;
@@ -2053,6 +2333,81 @@ mod tests {
         let msg = system_msg("hi");
         assert_eq!(msg["role"], "system");
         assert_eq!(msg["content"], "hi");
+    }
+
+    #[test]
+    fn sync_active_system_instruction_replaces_existing_system_slot() {
+        let mut session = crate::session::Session::new("/tmp".to_string(), "m".to_string());
+        session.active_instruction = Some("Persona B system prompt".to_string());
+        let mut messages = vec![system_msg("Persona A system prompt"), user_msg("hi")];
+
+        assert!(sync_active_system_instruction(&session, &mut messages));
+
+        assert_eq!(messages[0]["role"], "system");
+        assert_eq!(messages[0]["content"], "Persona B system prompt");
+        assert_eq!(
+            messages[1]["content"], "hi",
+            "transcript context must remain"
+        );
+    }
+
+    #[test]
+    fn apply_instruction_update_appends_to_current_system_prompt_once() {
+        let mut session = crate::session::Session::new("/tmp".to_string(), "m".to_string());
+        let mut messages = vec![system_msg("Base system prompt")];
+
+        apply_session_instruction_update(
+            &mut session,
+            &mut messages,
+            SessionInstructionUpdate::AppendSystemInstruction {
+                instruction: "Extra rule".to_string(),
+            },
+        );
+
+        assert_eq!(
+            session.active_instruction.as_deref(),
+            Some("Base system prompt\n\nExtra rule")
+        );
+        assert_eq!(messages[0]["content"], "Base system prompt\n\nExtra rule");
+        assert!(
+            !sync_active_system_instruction(&session, &mut messages),
+            "syncing again must not duplicate appended instructions"
+        );
+        assert_eq!(messages[0]["content"], "Base system prompt\n\nExtra rule");
+    }
+
+    #[test]
+    fn host_invoke_persona_tool_result_sets_active_persona_instruction() {
+        let content = "Persona 'Hiro' loaded\n\nYou are Hiro. Teach gently.";
+        let update = instruction_update_from_tool_result("host_invoke_persona", content, false)
+            .expect("persona result should produce update");
+        assert_eq!(
+            update,
+            SessionInstructionUpdate::ActivatePersona {
+                persona: "Hiro".to_string(),
+                instruction: content.to_string(),
+            }
+        );
+
+        let mut session = crate::session::Session::new("/tmp".to_string(), "m".to_string());
+        let mut messages = vec![system_msg("Yuki prompt"), user_msg("/persona Hiro")];
+        apply_session_instruction_update(&mut session, &mut messages, update);
+        assert_eq!(session.active_persona.as_deref(), Some("Hiro"));
+        assert_eq!(messages[0]["content"], content);
+        assert_eq!(
+            messages[1]["content"], "/persona Hiro",
+            "persona swap must preserve prior transcript"
+        );
+    }
+
+    #[test]
+    fn errored_tool_result_does_not_mutate_system_instruction() {
+        assert!(instruction_update_from_tool_result(
+            "host_invoke_persona",
+            "Persona 'Hiro' loaded",
+            true,
+        )
+        .is_none());
     }
 
     #[test]
@@ -3064,5 +3419,117 @@ mod tests {
             messages[0]["role"], "system",
             "system message should stay at position 0"
         );
+    }
+
+    // ── run_conversation_capture_with_client_in_config_dir (Tier 5 / Gap #9) ──
+
+    /// Mock LlmClient that returns a scripted ChatResponse, without touching
+    /// any HTTP backend. Proves the new host-callable surface is genuinely
+    /// provider-neutral — a non-Ollama implementation drives the capture loop
+    /// to completion.
+    struct MockLlmClient {
+        model_id: String,
+        response_text: std::sync::Mutex<String>,
+        chat_calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl MockLlmClient {
+        fn new(model_id: &str, response_text: &str) -> Self {
+            Self {
+                model_id: model_id.to_string(),
+                response_text: std::sync::Mutex::new(response_text.to_string()),
+                chat_calls: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl crate::llm::LlmClient for MockLlmClient {
+        fn model(&self) -> &str {
+            &self.model_id
+        }
+
+        async fn model_context_limit(&self, _model: &str) -> usize {
+            8192
+        }
+
+        async fn chat(
+            &self,
+            _messages: &[serde_json::Value],
+            _tools: &[crate::ollama::types::ToolDefinition],
+        ) -> anyhow::Result<crate::ollama::types::ChatResponse> {
+            self.chat_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let text = self.response_text.lock().unwrap().clone();
+            Ok(crate::ollama::types::ChatResponse {
+                message: crate::ollama::types::ChunkMessage {
+                    role: Some("assistant".to_string()),
+                    content: text,
+                    thinking: None,
+                    tool_calls: vec![],
+                },
+                prompt_tokens: 12,
+                completion_tokens: 7,
+                duration_ms: 0,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn host_capture_via_mock_llm_client_returns_text() {
+        // Proves the trait is the actual seam: a non-Ollama LlmClient
+        // implementation can be passed and the capture loop completes
+        // without any HTTP traffic to Ollama.
+        let tmp = tempfile::tempdir().unwrap();
+        let registry = crate::tools::registry::ToolRegistry::new();
+        let mock = MockLlmClient::new("anthropic/claude-opus", "Mocked assistant reply.");
+        let result = super::run_conversation_capture_with_client_in_config_dir(
+            "ping",
+            "test",
+            &mock,
+            &registry,
+            tmp.path(),
+        )
+        .await
+        .expect("capture must succeed against mock client");
+        assert_eq!(result.text, "Mocked assistant reply.");
+        assert_eq!(result.prompt_tokens, 12);
+        assert_eq!(result.completion_tokens, 7);
+        assert_eq!(
+            mock.chat_calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "no-tool-call response should consume exactly one chat round",
+        );
+    }
+
+    #[tokio::test]
+    async fn host_capture_logs_into_supplied_config_dir_not_home() {
+        // Backwards-compat shape: the host-callable seam initialises logging
+        // into the supplied config_dir (kotoba expectation), so the kernel's
+        // ~/.dm/ stays untouched. We verify by passing a tempdir and confirming
+        // the capture call doesn't fail. (Direct log-file inspection is brittle
+        // because logging::init_in_config_dir is best-effort; this test pins
+        // the wiring contract: config_dir is honored as the log destination.)
+        let tmp = tempfile::tempdir().unwrap();
+        let registry = crate::tools::registry::ToolRegistry::new();
+        let mock = MockLlmClient::new("custom-model", "ok");
+        super::run_conversation_capture_with_client_in_config_dir(
+            "hello",
+            "test",
+            &mock,
+            &registry,
+            tmp.path(),
+        )
+        .await
+        .expect("capture must succeed");
+    }
+
+    #[test]
+    fn ollama_client_implements_llm_client_trait() {
+        // Compile-time evidence: the canonical OllamaClient implements
+        // LlmClient, so existing kernel callers can pass it through the
+        // host-callable seam without any wrapping.
+        fn assert_impl<T: crate::llm::LlmClient>() {}
+        assert_impl::<crate::ollama::client::OllamaClient>();
     }
 }

@@ -16,7 +16,7 @@ use std::fs;
 use std::io;
 
 use super::{
-    auto_ingest_enabled, CycleNodeSnapshot, IndexEntry, PageType, Wiki, WikiIndex, WikiPage,
+    auto_ingest_enabled, CycleNodeSnapshot, IndexEntry, Layer, PageType, Wiki, WikiIndex, WikiPage,
     CYCLE_SYNTHESIS_LOG_VERB, CYCLE_SYNTHESIS_OUTPUT_PER_NODE, INDEX_LOCK, SYNTHESIS_CYCLE_PREFIX,
 };
 
@@ -49,6 +49,21 @@ impl Wiki {
         messages_summarized: usize,
         sources: &[String],
     ) -> io::Result<Option<String>> {
+        let layer = self.compact_synthesis_layer();
+        self.write_compact_synthesis_with_layer(summary, messages_summarized, sources, layer)
+    }
+
+    /// Explicit-layer variant of [`Self::write_compact_synthesis`]. The
+    /// default method derives this from `.dm/identity.toml`; this entry point
+    /// keeps tests and future identity-aware callers from relying on ambient
+    /// cwd or global state.
+    pub fn write_compact_synthesis_with_layer(
+        &self,
+        summary: &str,
+        messages_summarized: usize,
+        sources: &[String],
+        layer: Layer,
+    ) -> io::Result<Option<String>> {
         if !auto_ingest_enabled() {
             return Ok(None);
         }
@@ -77,7 +92,7 @@ impl Wiki {
         let page = WikiPage {
             title: title.clone(),
             page_type: PageType::Synthesis,
-            layer: crate::wiki::Layer::Kernel,
+            layer,
             sources: sources.to_vec(),
             last_updated: display_ts,
             entity_kind: None,
@@ -87,6 +102,7 @@ impl Wiki {
             outcome: None,
             scope: vec![],
             body,
+            extras: ::std::collections::BTreeMap::new(),
         };
         self.write_page(&page_rel, &page)?;
 
@@ -114,6 +130,17 @@ impl Wiki {
         let _ = self.log().append("compact", &page_rel);
 
         Ok(Some(page_rel))
+    }
+
+    fn compact_synthesis_layer(&self) -> Layer {
+        match crate::identity::load_at(&self.project_root()) {
+            Ok(identity) if identity.is_host() => Layer::Host,
+            Ok(_) => Layer::Kernel,
+            Err(e) => {
+                crate::warnings::push_warning(format!("identity: {}", e));
+                Layer::Kernel
+            }
+        }
     }
 
     /// Cap retained `synthesis/compact-*.md` pages at `max_keep`, removing
@@ -245,6 +272,7 @@ impl Wiki {
             outcome: outcome.map(String::from),
             scope: vec![],
             body,
+            extras: ::std::collections::BTreeMap::new(),
         };
         self.write_page(&page_rel, &page)?;
 

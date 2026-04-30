@@ -503,6 +503,8 @@ pub fn update_or_create_stub(
                 title,
                 model: model.to_string(),
                 messages: vec![],
+                active_persona: None,
+                active_instruction: None,
                 cwd: cwd.to_string(),
                 host_project: crate::identity::load_at(Path::new(cwd))
                     .ok()

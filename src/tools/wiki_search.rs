@@ -268,6 +268,7 @@ mod tests {
             outcome: None,
             scope: vec![],
             body: "This entity handles authentication and session tokens.".to_string(),
+            extras: ::std::collections::BTreeMap::new(),
         };
         wiki.write_page("entities/test-entity.md", &page).unwrap();
 
@@ -324,6 +325,7 @@ mod tests {
             outcome: None,
             scope: vec![],
             body: "This entity handles auth.".to_string(),
+            extras: ::std::collections::BTreeMap::new(),
         };
         wiki.write_page("entities/test-entity.md", &entity_page)
             .unwrap();
@@ -341,6 +343,7 @@ mod tests {
             outcome: None,
             scope: vec![],
             body: "Authentication patterns in the codebase.".to_string(),
+            extras: ::std::collections::BTreeMap::new(),
         };
         wiki.write_page("concepts/auth-pattern.md", &concept_page)
             .unwrap();
@@ -410,6 +413,7 @@ mod tests {
             outcome: None,
             scope: vec![],
             body: "auth".to_string(),
+            extras: ::std::collections::BTreeMap::new(),
         };
         wiki.write_page("concepts/host-finance.md", &host_page)
             .unwrap();
@@ -426,6 +430,7 @@ mod tests {
             outcome: None,
             scope: vec![],
             body: "auth auth auth".to_string(),
+            extras: ::std::collections::BTreeMap::new(),
         };
         wiki.write_page("concepts/kernel-auth.md", &kernel_page)
             .unwrap();
@@ -694,6 +699,7 @@ mod tests {
             outcome: None,
             scope: vec![],
             body: "Handles login.".to_string(),
+            extras: ::std::collections::BTreeMap::new(),
         };
         wiki.write_page("entities/auth-service.md", &page).unwrap();
 
@@ -754,6 +760,7 @@ mod tests {
             outcome: None,
             scope: vec![],
             body: "Session bookkeeping.".to_string(),
+            extras: ::std::collections::BTreeMap::new(),
         };
         wiki.write_page("entities/session-manager.md", &page)
             .unwrap();
@@ -815,6 +822,7 @@ mod tests {
             outcome: None,
             scope: vec![],
             body: "Auth entity.".to_string(),
+            extras: ::std::collections::BTreeMap::new(),
         };
         wiki.write_page("entities/auth-entity.md", &entity_page)
             .unwrap();
@@ -832,6 +840,7 @@ mod tests {
             outcome: None,
             scope: vec![],
             body: "Auth concept.".to_string(),
+            extras: ::std::collections::BTreeMap::new(),
         };
         wiki.write_page("concepts/auth-pattern.md", &concept_page)
             .unwrap();
@@ -948,6 +957,7 @@ mod tests {
             outcome: None,
             scope: vec![],
             body: "Auth entity body.".to_string(),
+            extras: ::std::collections::BTreeMap::new(),
         };
         wiki.write_page("entities/auth-entity.md", &page).unwrap();
 

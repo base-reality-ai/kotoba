@@ -3439,6 +3439,7 @@ mod tests {
             outcome: None,
             scope: vec![],
             body: "# sample\n".to_string(),
+            extras: ::std::collections::BTreeMap::new(),
         };
         wiki.write_page("entities/entity_sample.md", &page).unwrap();
         let mut idx = wiki.load_index().unwrap_or_default();
@@ -3558,6 +3559,7 @@ mod tests {
                 outcome: None,
                 scope: vec![],
                 body: format!("# e{:02}\n", i),
+                extras: ::std::collections::BTreeMap::new(),
             };
             wiki.write_page(&format!("entities/e{:02}.md", i), &page)
                 .unwrap();

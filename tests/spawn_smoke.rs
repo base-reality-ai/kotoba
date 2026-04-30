@@ -1,19 +1,16 @@
 use std::process::Command;
 use tempfile::TempDir;
 
-// Ignored in kotoba: this canonical-paradigm-validation test spawns a
-// finance-app fixture from the local source tree. Kotoba diverged from
-// canonical (added src/host_caps.rs that references kotoba's domain
-// types like `Mastery`), so the spawned project inherits an overlay
-// host_caps.rs that doesn't compile against the spawn-template
-// `src/domain.rs` that `dm spawn` writes for new projects. See
-// `.dm/wiki/concepts/paradigm-gap-spawn-host-overlay-bleedthrough.md`
-// for the diagnosis. Re-enable in canonical, where the test was
-// authored. This test was kept (rather than deleted) so the canonical
-// chain run that fixes the overlay-bleedthrough gap can flip the
-// `#[ignore]` and verify.
+// Ignored in kotoba: post-canonical-9259acb, this canonical test was synced
+// in. Post-canonical-80fea5c (Gap #6 fix), `dm spawn` refuses host-mode
+// source roots — kotoba IS host-mode, so attempting to spawn from kotoba's
+// local tree now correctly errors with "refusing to spawn from a host
+// project's source tree". The test was written for canonical context where
+// this refusal doesn't fire. To re-enable: pass an explicit
+// `--canonical <kernel-source-or-github>` rather than the implicit local
+// workspace.
 #[test]
-#[ignore = "kotoba host overlay bleeds into spawned fixture; canonical-paradigm-gap"]
+#[ignore = "post-Gap-#6: kotoba is host-mode, so local-tree spawn correctly refused"]
 fn test_spawn_smoke() {
     let tmp = TempDir::new().unwrap();
     let project_name = "finance-app";
@@ -131,6 +128,24 @@ fn test_spawn_smoke() {
         "spawned Cargo.toml lost the [lib] block; host imports would break.\n{spawned_cargo}",
     );
 
+    // Tier 1: `examples/*/Cargo.toml` must be rewritten so any path-style
+    // `dark-matter = { path = "../.." }` dep points at the spawned host
+    // package. Without this, every spawned project inherits a broken example
+    // (Cargo can't resolve a package named `dark-matter` at `../..` because
+    // the spawn renamed it to `<project_name>`).
+    let example_cargo = spawned_dir.join("examples/host-skeleton/Cargo.toml");
+    if example_cargo.exists() {
+        let example_text = std::fs::read_to_string(&example_cargo).unwrap();
+        assert!(
+            example_text.contains(&format!("{} = {{ path", project_name)),
+            "spawned example Cargo.toml not rewritten to host package name. Contents:\n{example_text}",
+        );
+        assert!(
+            !example_text.contains("dark-matter = { path"),
+            "spawned example Cargo.toml still references canonical dark-matter package. Contents:\n{example_text}",
+        );
+    }
+
     // Run `cargo build` in the spawned directory
     let status = Command::new("cargo")
         .arg("build")
@@ -223,5 +238,43 @@ fn test_spawn_rejects_invalid_project_name_before_clone() {
     assert!(
         !tmp.path().parent().unwrap().join("finance-app").exists(),
         "spawn should reject traversal before creating a directory"
+    );
+}
+
+#[test]
+fn test_spawn_refuses_host_mode_canonical_source_before_clone() {
+    let tmp = TempDir::new().unwrap();
+    let host_source = tmp.path().join("kotoba-source");
+    let dm_dir = host_source.join(".dm");
+    std::fs::create_dir_all(&dm_dir).unwrap();
+    std::fs::write(
+        dm_dir.join("identity.toml"),
+        "mode = \"host\"\nhost_project = \"kotoba\"\n",
+    )
+    .unwrap();
+
+    let bin = env!("CARGO_BIN_EXE_dm");
+    let output = Command::new(bin)
+        .arg("spawn")
+        .arg("finance-app")
+        .arg("--canonical")
+        .arg(format!("file://{}", host_source.display()))
+        .current_dir(tmp.path())
+        .output()
+        .expect("failed to execute spawn");
+
+    assert!(
+        !output.status.success(),
+        "spawn from host-mode source unexpectedly succeeded"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("refusing to spawn from a host project's source tree")
+            && stderr.contains("--canonical https://github.com/base-reality-ai/Dark-Matter"),
+        "stderr missing host-source refusal and retry hint: {stderr}",
+    );
+    assert!(
+        !tmp.path().join("finance-app").exists(),
+        "spawn should reject host-mode canonical source before creating target"
     );
 }

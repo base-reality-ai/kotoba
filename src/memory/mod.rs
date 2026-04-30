@@ -260,6 +260,8 @@ mod tests {
                 serde_json::json!({"role": "user", "content": "hello"}),
                 serde_json::json!({"role": "assistant", "content": "hi"}),
             ],
+            active_persona: None,
+            active_instruction: None,
             title: None,
             created_at: now,
             updated_at: now,

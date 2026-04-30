@@ -254,6 +254,7 @@ mod tests {
             outcome: None,
             scope: vec![],
             body: "Handles login and session management.".to_string(),
+            extras: ::std::collections::BTreeMap::new(),
         };
         wiki.write_page("entities/auth-service.md", &page).unwrap();
 
@@ -314,6 +315,7 @@ mod tests {
             outcome: None,
             scope: vec![],
             body: "Host-domain budget concept.".to_string(),
+            extras: ::std::collections::BTreeMap::new(),
         };
         wiki.write_page("concepts/host-budget.md", &page).unwrap();
 
@@ -355,6 +357,7 @@ mod tests {
             outcome: None,
             scope: vec![],
             body: "Manages user sessions.".to_string(),
+            extras: ::std::collections::BTreeMap::new(),
         };
         wiki.write_page("entities/session-manager.md", &page)
             .unwrap();
@@ -440,6 +443,7 @@ mod tests {
             outcome: None,
             scope: vec![],
             body: "Handles login and session management.".to_string(),
+            extras: ::std::collections::BTreeMap::new(),
         };
         wiki.write_page("entities/auth_service.md", &page).unwrap();
 
@@ -495,6 +499,7 @@ mod tests {
             outcome: None,
             scope: vec![],
             body: "Handles login.".to_string(),
+            extras: ::std::collections::BTreeMap::new(),
         };
         wiki.write_page("entities/auth-service.md", &page).unwrap();
 
@@ -550,6 +555,7 @@ mod tests {
             outcome: None,
             scope: vec![],
             body: "Handles login.".to_string(),
+            extras: ::std::collections::BTreeMap::new(),
         };
         wiki.write_page("entities/auth-service.md", &page).unwrap();
 

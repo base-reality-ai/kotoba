@@ -105,6 +105,10 @@ pub async fn run_turn(
             event_tx.send(BackendEvent::Cancelled).await.ok();
             return None;
         }
+        if crate::conversation::sync_active_system_instruction(session, messages) {
+            session.messages.clone_from(messages);
+            session_storage::save(config_dir, session).ok();
+        }
 
         if verbose {
             event_tx
