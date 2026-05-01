@@ -454,6 +454,15 @@ impl OllamaClient {
             "messages": messages,
             "stream": stream,
             "tools": tools,
+            // Suppress thinking/reasoning content. Some Ollama models (notably
+            // the gemma4 family) emit hundreds of `thinking: "..."` chunks
+            // before any actual `content` chunk; in TUI streaming mode this
+            // visually looks like the stream stalled and the request often
+            // exits before content arrives. Setting `think: false` makes the
+            // model stream content directly. Reasoning models that respect
+            // the flag still produce reasoning internally — just not in the
+            // streaming response — so quality is unaffected for end users.
+            "think": false,
             "options": {
                 "num_predict": -1  // unlimited output tokens
             }
